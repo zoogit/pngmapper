@@ -1,0 +1,30 @@
+.export-section {
+  margin-top: 2rem;
+}
+
+.export-button {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  background: #28a745;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.export-button:hover:not(:disabled) {
+  background: #218838;
+}
+
+.export-button:disabled {
+  background: #6c757d;
+  cursor: not-allowed;
+}
+
+.error-text {
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+  color: #dc3545;
+}

@@ -1,0 +1,36 @@
+.file-upload {
+  margin-bottom: 1.5rem;
+}
+
+.upload-label {
+  display: block;
+  width: 100%;
+  padding: 0.75rem 1rem;
+  background: #007bff;
+  color: white;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: center;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+
+.upload-label:hover {
+  background: #0056b3;
+}
+
+.file-input {
+  display: none;
+}
+
+.help-text {
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+  color: #6c757d;
+}
+
+.error-text {
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+  color: #dc3545;
+}

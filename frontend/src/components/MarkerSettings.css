@@ -1,0 +1,91 @@
+.marker-settings {
+  margin: 1rem 0;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.settings-toggle {
+  width: 100%;
+  padding: 0.75rem;
+  background: #f8f9fa;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+
+.settings-toggle:hover {
+  background: #e9ecef;
+}
+
+.settings-panel {
+  padding: 1rem;
+  background: white;
+  border-top: 1px solid #ddd;
+}
+
+.setting-group {
+  margin-bottom: 1rem;
+}
+
+.setting-group label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+
+.setting-group label span {
+  flex: 1;
+  min-width: 150px;
+}
+
+.setting-group input[type="color"] {
+  width: 60px;
+  height: 35px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.setting-group input[type="number"] {
+  width: 80px;
+  padding: 0.4rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+.setting-group input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+.setting-group select {
+  padding: 0.4rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  background: white;
+}
+
+.reset-button {
+  width: 100%;
+  padding: 0.6rem;
+  background: #6c757d;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  margin-top: 0.5rem;
+  transition: background 0.2s;
+}
+
+.reset-button:hover {
+  background: #5a6268;
+}
