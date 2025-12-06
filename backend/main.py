@@ -118,7 +118,12 @@ async def geocode_addresses(request: AddressRequest):
             # Add delay to respect Nominatim usage policy (1 request per second)
             time.sleep(1)
 
-            location = geolocator.geocode(address, timeout=10)
+            # Normalize address format: replace multiple spaces with comma
+            # This allows "Los Angeles    CA" to become "Los Angeles, CA"
+            import re
+            normalized_address = re.sub(r'\s{2,}', ', ', address.strip())
+
+            location = geolocator.geocode(normalized_address, timeout=10)
 
             if location:
                 results.append({
