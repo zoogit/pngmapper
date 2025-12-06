@@ -18,7 +18,11 @@ app = FastAPI(title="PNGMap API")
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For development - restrict in production
+    allow_origins=[
+        "https://pngmapper.netlify.app",
+        "http://localhost:3000",
+        "http://localhost:3001"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
