@@ -1,11 +1,13 @@
 import { useState } from 'react'
-import { geocodeAddresses } from '../services/api'
+import { geocodeAddresses, estimateGeocodingTime } from '../services/geocoding'
 import './LocationInput.css'
 
 function LocationInput({ onLocationsAdded }) {
   const [inputText, setInputText] = useState('')
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [progress, setProgress] = useState({ current: 0, total: 0 })
+  const [estimatedTime, setEstimatedTime] = useState('')
 
   const parseAddresses = (text) => {
     const lines = text.trim().split('\n')
@@ -30,6 +32,7 @@ function LocationInput({ onLocationsAdded }) {
   const handleAddLocations = async () => {
     setError(null)
     setLoading(true)
+    setProgress({ current: 0, total: 0 })
 
     if (!inputText.trim()) {
       setError('Please enter some addresses')
@@ -46,8 +49,14 @@ function LocationInput({ onLocationsAdded }) {
         return
       }
 
-      // Geocode addresses
-      const results = await geocodeAddresses(addresses)
+      // Show estimated time
+      const estimate = estimateGeocodingTime(addresses.length)
+      setEstimatedTime(estimate)
+
+      // Geocode addresses with progress callback
+      const results = await geocodeAddresses(addresses, (current, total, result) => {
+        setProgress({ current, total })
+      })
 
       // Filter successful results
       const successful = results.filter(r => r.success)
@@ -56,6 +65,7 @@ function LocationInput({ onLocationsAdded }) {
       if (successful.length === 0) {
         setError('Could not geocode any addresses. Please check the format.')
         setLoading(false)
+        setProgress({ current: 0, total: 0 })
         return
       }
 
@@ -74,6 +84,8 @@ function LocationInput({ onLocationsAdded }) {
       console.error('Geocoding error:', err)
     } finally {
       setLoading(false)
+      setProgress({ current: 0, total: 0 })
+      setEstimatedTime('')
     }
   }
 
@@ -122,10 +134,18 @@ function LocationInput({ onLocationsAdded }) {
         </button>
       </div>
 
-      {loading && (
-        <p className="info-text">
-          Geocoding addresses... This may take a few seconds.
-        </p>
+      {loading && progress.total > 0 && (
+        <div className="progress-container">
+          <p className="info-text">
+            Geocoding {progress.current}/{progress.total} addresses... {estimatedTime}
+          </p>
+          <div className="progress-bar">
+            <div
+              className="progress-fill"
+              style={{ width: `${(progress.current / progress.total) * 100}%` }}
+            />
+          </div>
+        </div>
       )}
     </div>
   )
