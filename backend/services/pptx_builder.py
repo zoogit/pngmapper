@@ -105,10 +105,22 @@ def create_presentation_with_shapes(locations, template_path=None, map_bounds=No
 
     # Check if map3.pptx exists (in current dir or parent dir)
     user_map_path = None
+
+    # Debug: log current directory and file search
+    import os
+    current_dir = os.getcwd()
+    print(f"DEBUG: Current working directory: {current_dir}")
+    print(f"DEBUG: Checking for map3.pptx in current dir: {os.path.exists('map3.pptx')}")
+    print(f"DEBUG: Checking for ../map3.pptx: {os.path.exists('../map3.pptx')}")
+
     if os.path.exists('map3.pptx'):
         user_map_path = 'map3.pptx'
+        print(f"DEBUG: Using map3.pptx from current directory")
     elif os.path.exists('../map3.pptx'):
         user_map_path = '../map3.pptx'
+        print(f"DEBUG: Using map3.pptx from parent directory")
+    else:
+        print(f"DEBUG: map3.pptx not found in current or parent directory")
 
     # Initialize coordinate converter with standard bounds
     slide_bounds = {
