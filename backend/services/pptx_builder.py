@@ -4,7 +4,7 @@ from pptx.enum.text import PP_ALIGN
 from pptx.enum.shapes import MSO_SHAPE
 from pptx.dml.color import RGBColor
 from services.coordinate_converter import MapCoordinateConverter
-from services.standard_map import get_standard_map_path, get_map_bounds
+from services.standard_map import get_standard_map_path, get_map_bounds, ASPECT_RATIOS, generate_map
 import os
 
 def create_presentation(map_image_path, locations):
@@ -86,7 +86,8 @@ def create_presentation(map_image_path, locations):
     return output_path
 
 
-def create_presentation_with_shapes(locations, template_path=None, map_bounds=None, marker_styles=None):
+def create_presentation_with_shapes(locations, template_path=None, map_bounds=None, marker_styles=None,
+                                   region='us', aspect_ratio='widescreen', projection='web_mercator'):
     """
     Create PowerPoint presentation with shapes instead of images
 
@@ -95,58 +96,89 @@ def create_presentation_with_shapes(locations, template_path=None, map_bounds=No
         template_path: Optional path to template PPTX with map background
         map_bounds: Optional dict with custom map bounds
         marker_styles: Optional dict with marker styling options
+        region: Region code ('us', 'europe', 'world', etc.)
+        aspect_ratio: 'widescreen' (16:9) or 'standard' (4:3)
+        projection: Projection type ('web_mercator', 'robinson', 'equal_earth')
 
     Returns:
         str: Path to created presentation
     """
-    # Use standard map bounds
-    if map_bounds is None:
-        map_bounds = get_map_bounds()
+    # Get aspect ratio dimensions
+    aspect = ASPECT_RATIOS.get(aspect_ratio, ASPECT_RATIOS['widescreen'])
 
-    # Check if map3.pptx exists (in current dir or parent dir)
-    user_map_path = None
-
-    # Debug: log current directory and file search
-    import os
-    current_dir = os.getcwd()
-    print(f"DEBUG: Current working directory: {current_dir}")
-    print(f"DEBUG: Checking for map3.pptx in current dir: {os.path.exists('map3.pptx')}")
-    print(f"DEBUG: Checking for ../map3.pptx: {os.path.exists('../map3.pptx')}")
-
-    if os.path.exists('map3.pptx'):
-        user_map_path = 'map3.pptx'
-        print(f"DEBUG: Using map3.pptx from current directory")
-    elif os.path.exists('../map3.pptx'):
-        user_map_path = '../map3.pptx'
-        print(f"DEBUG: Using map3.pptx from parent directory")
-    else:
-        print(f"DEBUG: map3.pptx not found in current or parent directory")
-
-    # Initialize coordinate converter with standard bounds
-    slide_bounds = {
-        'left': 0,
-        'top': 0,
-        'width': 13.333,
-        'height': 7.5
-    }
-    converter = MapCoordinateConverter(map_bounds=map_bounds, slide_bounds=slide_bounds)
-
-    # SLIDE 1: User's map (if exists) - Start with their template
-    if user_map_path and os.path.exists(user_map_path):
+    # SLIDE 1: User's template (if exists)
+    if template_path and os.path.exists(template_path):
         # Load the user's template as base
-        prs = Presentation(user_map_path)
+        prs = Presentation(template_path)
+        print(f"DEBUG: Loaded template from {template_path}")
 
-        # Add markers to the first slide (user's map)
+        # For template slide, we need to match the map positioning
+        # Try to detect if there's an image on the slide and use its bounds
+        # Otherwise, assume the map uses the same aspect ratio fitting as slide 2
         if len(prs.slides) > 0:
-            add_markers_to_slide(prs.slides[0], locations, converter, marker_styles)
-    else:
-        # No user map, create new presentation
-        prs = Presentation()
-        prs.slide_width = Inches(13.333)
-        prs.slide_height = Inches(7.5)
+            template_slide = prs.slides[0]
 
-    # SLIDE 2: Generated OpenStreetMap (always add this)
-    standard_map_path = get_standard_map_path()
+            # Get map bounds for template slide
+            print(f"DEBUG: Getting map bounds for template slide...")
+            template_map_path, template_bounds = get_standard_map_path(
+                region=region,
+                aspect_ratio=aspect_ratio,
+                projection=projection,
+                locations=locations
+            )
+            print(f"DEBUG: Template bounds: N={template_bounds['north']:.2f}, S={template_bounds['south']:.2f}")
+
+            # Calculate letterboxing for template (match slide 2)
+            # Get natural map dimensions
+            from PIL import Image
+            with Image.open(template_map_path) as img:
+                map_aspect = img.width / img.height
+
+            template_slide_width = aspect['width']
+            template_slide_height = aspect['height']
+
+            # Calculate letterboxed dimensions (same as slide 2)
+            template_img_width = template_slide_width
+            template_img_height = template_img_width / map_aspect
+
+            if template_img_height > template_slide_height:
+                template_img_height = template_slide_height
+                template_img_width = template_img_height * map_aspect
+
+            # Center the map
+            template_img_left = (template_slide_width - template_img_width) / 2
+            template_img_top = (template_slide_height - template_img_height) / 2
+
+            print(f"DEBUG: Slide 1 - Map positioned at: left={template_img_left:.2f}\", top={template_img_top:.2f}\"")
+            print(f"DEBUG: Slide 1 - Map size: {template_img_width:.2f}\" x {template_img_height:.2f}\"")
+
+            # Create converter for template slide - uses letterboxed positioning
+            template_converter = MapCoordinateConverter(
+                map_bounds=template_bounds,  # Original bounds, no adjustment
+                slide_bounds={
+                    'left': template_img_left,
+                    'top': template_img_top,
+                    'width': template_img_width,
+                    'height': template_img_height
+                },
+                projection=projection
+            )
+
+            add_markers_to_slide(template_slide, locations, template_converter, marker_styles)
+    else:
+        # No user template, create new presentation
+        prs = Presentation()
+        prs.slide_width = Inches(aspect['width'])
+        prs.slide_height = Inches(aspect['height'])
+        print(f"DEBUG: Created new presentation with {aspect_ratio} aspect ratio")
+
+    # SLIDE 2: Generated map (always add this)
+    standard_map_path, map_bounds = get_standard_map_path(
+        region=region,
+        aspect_ratio=aspect_ratio,
+        projection=projection,
+        locations=locations
+    )
 
     # Create a blank slide for the generated map
     blank_layout = prs.slide_layouts[6] if prs.slide_layouts else None
@@ -154,24 +186,69 @@ def create_presentation_with_shapes(locations, template_path=None, map_bounds=No
         map_slide_2 = prs.slides.add_slide(blank_layout)
     else:
         # Fallback: just add slide without layout
-        from pptx.slide import Slide
         map_slide_2 = prs.slides.add_slide(prs.slide_layouts[0])
 
-    # Add the generated map image as background
-    map_slide_2.shapes.add_picture(
+    # Get slide dimensions
+    slide_width = aspect['width']
+    slide_height = aspect['height']
+
+    # Add map with letterboxing (maintain aspect ratio)
+    padding = 0
+    max_width = Inches(slide_width - (2 * padding))
+
+    # Add the image (PowerPoint will maintain aspect ratio)
+    pic = map_slide_2.shapes.add_picture(
         standard_map_path,
-        Inches(0),
-        Inches(0),
-        width=Inches(13.333),
-        height=Inches(7.5)
+        Inches(0),  # Temp position
+        Inches(0),  # Temp position
+        width=max_width
     )
 
-    # Add markers to generated map
-    add_markers_to_slide(map_slide_2, locations, converter, marker_styles)
+    # Get actual dimensions after PowerPoint scaled it
+    actual_width = pic.width.inches
+    actual_height = pic.height.inches
+
+    # Check if height fits on slide
+    if actual_height > slide_height - (2 * padding):
+        # Too tall - resize based on height instead
+        # Calculate aspect ratio and set both dimensions
+        aspect_ratio_img = actual_width / actual_height
+        actual_height = slide_height - (2 * padding)
+        actual_width = actual_height * aspect_ratio_img
+
+        pic.width = Inches(actual_width)
+        pic.height = Inches(actual_height)
+
+    # Center the image on the slide
+    img_left = (slide_width - actual_width) / 2
+    img_top = (slide_height - actual_height) / 2
+
+    pic.left = Inches(img_left)
+    pic.top = Inches(img_top)
+
+    print(f"DEBUG: Slide 2 - Map positioned at: left={img_left:.2f}\", top={img_top:.2f}\"")
+    print(f"DEBUG: Slide 2 - Map size: {actual_width:.2f}\" x {actual_height:.2f}\"")
+    print(f"DEBUG: Using ORIGINAL bounds (no adjustment): N={map_bounds['north']:.2f}, S={map_bounds['south']:.2f}")
+
+    # Converter uses ORIGINAL geographic bounds and EXACT image position
+    slide_2_converter = MapCoordinateConverter(
+        map_bounds=map_bounds,  # Original bounds, no adjustment
+        slide_bounds={
+            'left': img_left,
+            'top': img_top,
+            'width': actual_width,
+            'height': actual_height
+        },
+        projection=projection
+    )
+
+    # Add markers to generated map with correct positioning
+    add_markers_to_slide(map_slide_2, locations, slide_2_converter, marker_styles)
 
     # Save
     output_path = 'output.pptx'
     prs.save(output_path)
+    print(f"DEBUG: Saved presentation to {output_path}")
 
     return output_path
 
@@ -205,7 +282,6 @@ def add_markers_to_slide(slide, locations, converter, marker_styles=None):
         'showLabels': True,
         'labelFontSize': 10,
         'labelTextColor': '#000000',
-        'labelBgColor': '#ffffff',
         'labelBold': True
     }
 
@@ -216,7 +292,6 @@ def add_markers_to_slide(slide, locations, converter, marker_styles=None):
     marker_rgb = hex_to_rgb(styles.get('markerColor', default_styles['markerColor']))
     outline_rgb = hex_to_rgb(styles.get('outlineColor', default_styles['outlineColor']))
     label_text_rgb = hex_to_rgb(styles.get('labelTextColor', default_styles['labelTextColor']))
-    label_bg_rgb = hex_to_rgb(styles.get('labelBgColor', default_styles['labelBgColor']))
 
     # Add location markers as shapes
     for location in locations:
@@ -290,9 +365,6 @@ def add_markers_to_slide(slide, locations, converter, marker_styles=None):
             paragraph.font.bold = styles.get('labelBold', default_styles['labelBold'])
             paragraph.font.color.rgb = RGBColor(*label_text_rgb)
 
-            # Add background to label
-            label_box.fill.solid()
-            label_box.fill.fore_color.rgb = RGBColor(*label_bg_rgb)
-            label_box.fill.fore_color.brightness = 0.9
-            label_box.line.color.rgb = RGBColor(200, 200, 200)
-            label_box.line.width = Pt(0.5)
+            # No background fill or outline for labels
+            label_box.fill.background()
+            label_box.line.fill.background()

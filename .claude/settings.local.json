@@ -10,7 +10,8 @@
       "Bash(npm install:*)",
       "Bash(npm run dev)",
       "Bash(ls:*)",
-      "Bash(taskkill:*)"
+      "Bash(taskkill:*)",
+      "Bash(cat:*)"
     ],
     "deny": [],
     "ask": []

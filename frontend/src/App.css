@@ -19,8 +19,53 @@
 
 .subtitle {
   color: #6c757d;
-  margin-bottom: 2rem;
+  margin-bottom: 1rem;
   font-size: 0.9rem;
+}
+
+.map-config-section {
+  background: white;
+  padding: 1rem;
+  border-radius: 8px;
+  border: 1px solid #dee2e6;
+  margin-bottom: 1.5rem;
+}
+
+.config-row {
+  margin-bottom: 0.75rem;
+}
+
+.config-row:last-child {
+  margin-bottom: 0;
+}
+
+.config-row label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: #495057;
+  gap: 0.25rem;
+}
+
+.config-row select {
+  padding: 0.5rem;
+  border: 1px solid #ced4da;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  background: white;
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+
+.config-row select:hover {
+  border-color: #adb5bd;
+}
+
+.config-row select:focus {
+  outline: none;
+  border-color: #007bff;
+  box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.1);
 }
 
 .info {

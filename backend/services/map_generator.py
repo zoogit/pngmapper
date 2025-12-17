@@ -44,7 +44,7 @@ def generate_map_image(locations, center, zoom, marker_color):
         ctx.add_basemap(
             ax,
             crs=gdf.crs,
-            source=ctx.providers.OpenStreetMap.Mapnik,
+            source=ctx.providers.CartoDB.Voyager,
             zoom='auto'
         )
     except Exception as e:

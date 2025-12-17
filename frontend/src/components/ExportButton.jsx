@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { generatePPTX } from '../services/api'
 import './ExportButton.css'
 
-function ExportButton({ locations, mapConfig, markerStyles, disabled }) {
+function ExportButton({ locations, mapConfig, markerStyles, region, aspectRatio, projection, disabled }) {
   const [generating, setGenerating] = useState(false)
   const [error, setError] = useState(null)
 
@@ -11,10 +11,18 @@ function ExportButton({ locations, mapConfig, markerStyles, disabled }) {
     setError(null)
 
     console.log('EXPORT DEBUG - markerStyles:', markerStyles)
-    console.log('EXPORT DEBUG - Full config:', { locations, markerStyles, ...mapConfig })
+    console.log('EXPORT DEBUG - Region:', region, 'Aspect:', aspectRatio, 'Projection:', projection)
+    console.log('EXPORT DEBUG - Full config:', { locations, markerStyles, region, aspectRatio, projection, ...mapConfig })
 
     try {
-      await generatePPTX({ locations, markerStyles, ...mapConfig })
+      await generatePPTX({
+        locations,
+        markerStyles,
+        region,
+        aspectRatio,
+        projection,
+        ...mapConfig
+      })
     } catch (err) {
       setError(err.message || 'Failed to generate PowerPoint')
       console.error('Export error:', err)

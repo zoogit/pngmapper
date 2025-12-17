@@ -39,7 +39,9 @@ Thumbs.db
 # Project specific
 backend/output.pptx
 backend/template.pptx
-backend/static_us_map.png
+backend/static_*.png
+*.txt
+dump */
 
 # Logs
 *.log

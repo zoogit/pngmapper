@@ -1,50 +1,193 @@
 import matplotlib.pyplot as plt
 import contextily as ctx
 import os
+from pyproj import Transformer
+from PIL import Image
 
-# Standard US map bounds
-US_BOUNDS = {
-    'north': 49.5,
-    'south': 24.5,
-    'west': -125.0,
-    'east': -66.0
+# Region bounds definitions
+REGION_BOUNDS = {
+    'us': {
+        'continental': {
+            'north': 49.5, 'south': 24.5,
+            'west': -125.0, 'east': -66.0
+        },
+        'with_alaska': {
+            'north': 71.5, 'south': 24.5,
+            'west': -168.0, 'east': -66.0
+        },
+        'with_hawaii': {
+            'north': 49.5, 'south': 18.9,
+            'west': -125.0, 'east': -66.0
+        },
+        'full': {  # Alaska + Hawaii
+            'north': 71.5, 'south': 18.9,
+            'west': -168.0, 'east': -66.0
+        }
+    },
+    'north_america': {
+        'north': 60.0, 'south': 7.0,  # Cropped arctic, USA centered, includes Central America
+        'west': -168.0, 'east': -52.0
+    },
+    'south_america': {
+        'north': 12.5, 'south': -56.0,
+        'west': -81.0, 'east': -34.0
+    },
+    'brazil': {
+        'north': 5.3, 'south': -33.8,
+        'west': -85.0, 'east': -25.0  # Extended to show more ocean on both sides
+    },
+    'europe': {
+        'north': 71.0, 'south': 36.0,
+        'west': -10.0, 'east': 40.0
+    },
+    'uk': {  # UK & Ireland
+        'north': 60.9, 'south': 49.9,
+        'west': -8.2, 'east': 1.8
+    },
+    'china': {
+        'north': 53.5, 'south': 18.0,
+        'west': 73.5, 'east': 135.0
+    },
+    'asia': {
+        'north': 55.0, 'south': -10.0,
+        'west': 25.0, 'east': 150.0
+    },
+    'world': {
+        'north': 80.0, 'south': -66.089364,
+        'west': -180.0, 'east': 180.0
+    }
 }
 
-def generate_standard_us_map(output_path='static_us_map.png', dpi=300):
+# Aspect ratio definitions (for slide size)
+ASPECT_RATIOS = {
+    'widescreen': {  # 16:9
+        'width': 13.333,
+        'height': 7.5,
+        'label': 'Widescreen (16:9)'
+    },
+    'standard': {  # 4:3
+        'width': 10.0,
+        'height': 7.5,
+        'label': 'Standard (4:3)'
+    }
+}
+
+# Projection definitions
+PROJECTIONS = {
+    'web_mercator': {
+        'epsg': 'EPSG:3857',
+        'label': 'Web Mercator'
+    },
+    'robinson': {
+        'epsg': 'ESRI:54030',
+        'label': 'Robinson'
+    },
+    'equal_earth': {
+        'epsg': 'ESRI:54035',
+        'label': 'Equal Earth'
+    }
+}
+
+# Backward compatibility
+US_BOUNDS = REGION_BOUNDS['us']['continental']
+
+
+def detect_us_bounds(locations):
     """
-    Generate a standard US map image with consistent bounds using Web Mercator
+    Detect which US bounds to use based on location data
 
     Args:
-        output_path: Where to save the map image
-        dpi: Resolution of the output image
+        locations: List of dicts with 'lat' and 'lng' keys
 
     Returns:
-        dict: Map bounds used in Web Mercator coordinates
+        str: US bounds variant ('continental', 'with_alaska', 'with_hawaii', 'full')
     """
-    # Convert lat/lng bounds to Web Mercator
-    import contextily as ctx
-    from pyproj import Transformer
+    if not locations:
+        return 'continental'
 
-    # Transformer from WGS84 (EPSG:4326) to Web Mercator (EPSG:3857)
-    transformer = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+    has_alaska = any(loc['lat'] > 51.0 and loc['lng'] < -130.0 for loc in locations)
+    has_hawaii = any(loc['lat'] < 22.0 and loc['lng'] < -155.0 for loc in locations)
 
-    # Transform corners
-    west_merc, south_merc = transformer.transform(US_BOUNDS['west'], US_BOUNDS['south'])
-    east_merc, north_merc = transformer.transform(US_BOUNDS['east'], US_BOUNDS['north'])
+    if has_alaska and has_hawaii:
+        return 'full'
+    elif has_alaska:
+        return 'with_alaska'
+    elif has_hawaii:
+        return 'with_hawaii'
+    else:
+        return 'continental'
 
-    # Create figure with specific size (16:9 aspect ratio)
-    fig, ax = plt.subplots(figsize=(13.333, 7.5))
 
-    # Set the extent in Web Mercator coordinates
-    ax.set_xlim(west_merc, east_merc)
-    ax.set_ylim(south_merc, north_merc)
+def get_region_bounds(region='us', locations=None):
+    """
+    Get geographic bounds for a region
+
+    Args:
+        region: Region code ('us', 'world', 'europe', etc.)
+        locations: Optional location data for smart bounds detection
+
+    Returns:
+        dict: Geographic bounds with 'north', 'south', 'east', 'west'
+    """
+    if region == 'us' and locations:
+        variant = detect_us_bounds(locations)
+        return REGION_BOUNDS['us'][variant]
+    elif region == 'us':
+        return REGION_BOUNDS['us']['continental']
+    else:
+        return REGION_BOUNDS.get(region, REGION_BOUNDS['us']['continental'])
+
+
+def generate_map(bounds, projection='web_mercator', output_path='map.png', dpi=300):
+    """
+    Generate a map image at its natural aspect ratio (no forcing)
+
+    Args:
+        bounds: Dict with 'north', 'south', 'east', 'west' geographic bounds
+        projection: Projection type ('web_mercator', 'robinson', 'equal_earth')
+        output_path: Where to save the map
+        dpi: Image resolution
+
+    Returns:
+        dict: Geographic bounds used (unchanged from input)
+    """
+    # Get projection EPSG code
+    proj = PROJECTIONS.get(projection, PROJECTIONS['web_mercator'])
+    epsg = proj['epsg']
+
+    # Transform to projected coordinates
+    transformer = Transformer.from_crs("EPSG:4326", epsg, always_xy=True)
+
+    west_proj, south_proj = transformer.transform(bounds['west'], bounds['south'])
+    east_proj, north_proj = transformer.transform(bounds['east'], bounds['north'])
+
+    # Calculate natural aspect ratio in projected space
+    proj_width = east_proj - west_proj
+    proj_height = north_proj - south_proj
+    natural_aspect = proj_width / proj_height
+
+    print(f"DEBUG: Generating map with natural aspect ratio: {natural_aspect:.2f}:1")
+    print(f"DEBUG: Geographic bounds: N={bounds['north']:.2f}, S={bounds['south']:.2f}, E={bounds['east']:.2f}, W={bounds['west']:.2f}")
+
+    # Create figure at natural aspect ratio
+    # Use a reasonable base height and calculate width
+    fig_height = 7.5
+    fig_width = fig_height * natural_aspect
+
+    print(f"DEBUG: Figure size: {fig_width:.2f}\" × {fig_height:.2f}\"")
+
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+
+    # Set extent in projected coordinates
+    ax.set_xlim(west_proj, east_proj)
+    ax.set_ylim(south_proj, north_proj)
 
     # Add basemap
     try:
         ctx.add_basemap(
             ax,
             source=ctx.providers.OpenStreetMap.Mapnik,
-            zoom=5,
+            crs=epsg,
             attribution=False
         )
     except Exception as e:
@@ -55,7 +198,7 @@ def generate_standard_us_map(output_path='static_us_map.png', dpi=300):
     plt.tight_layout(pad=0)
     plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
 
-    # Save the map
+    # Save with tight bounding box (minimal whitespace trimming)
     plt.savefig(
         output_path,
         dpi=dpi,
@@ -65,77 +208,43 @@ def generate_standard_us_map(output_path='static_us_map.png', dpi=300):
     )
     plt.close()
 
-    # Return both lat/lng bounds and Web Mercator bounds
-    return {
-        'lat_lng': US_BOUNDS,
-        'web_mercator': {
-            'west': west_merc,
-            'east': east_merc,
-            'south': south_merc,
-            'north': north_merc
-        }
-    }
+    print(f"DEBUG: Map saved to {output_path}")
+
+    # Return the ORIGINAL bounds (no adjustment)
+    return bounds
 
 
-def extract_slide_from_pptx(pptx_path, output_path='static_us_map.png'):
+def get_standard_map_path(region='us', aspect_ratio='standard', projection='web_mercator', locations=None):
     """
-    Extract the first slide from a PowerPoint as an image
+    Get or generate a standard map for a region
 
     Args:
-        pptx_path: Path to PowerPoint file
-        output_path: Where to save the extracted image
+        region: Region code
+        aspect_ratio: Slide aspect ratio (not used for map generation, only for slide size)
+        projection: Map projection type
+        locations: Optional location data
 
     Returns:
-        bool: True if successful
+        tuple: (map_path, geographic_bounds)
     """
-    try:
-        from pptx import Presentation
-        from PIL import Image
-        import io
+    # Get bounds for region
+    bounds = get_region_bounds(region, locations)
 
-        prs = Presentation(pptx_path)
-        if len(prs.slides) == 0:
-            return False
+    # Generate cache filename
+    cache_name = f"static_{region}_{projection}.png"
 
-        # For now, we'll use a different approach - just copy any background image
-        # Or generate from the slide using a more complex method
-        # Since extracting slides to images is complex, we'll use the generated map as fallback
-        print(f"Note: Using map from {pptx_path} (markers will be added on first slide)")
-        return False  # Will use generated map for preview, but pptx for output
+    # Check cache
+    if os.path.exists(cache_name):
+        print(f"DEBUG: Using cached map: {cache_name}")
+        return (cache_name, bounds)
 
-    except Exception as e:
-        print(f"Could not extract slide from {pptx_path}: {e}")
-        return False
+    # Generate new map
+    print(f"DEBUG: Generating new map for {region} with {projection}")
+    generate_map(bounds, projection, cache_name)
+
+    return (cache_name, bounds)
 
 
-def get_standard_map_path():
-    """
-    Get or create the standard US map
-
-    Returns:
-        str: Path to the standard map image
-    """
-    map_path = 'static_us_map.png'
-
-    # Check if map3.pptx exists (in current dir or parent dir)
-    if os.path.exists('map3.pptx') or os.path.exists('../map3.pptx'):
-        map_location = 'map3.pptx' if os.path.exists('map3.pptx') else '../map3.pptx'
-        print(f"Found {map_location} - will use for PowerPoint output")
-        # Still generate a preview map for the web interface
-        if not os.path.exists(map_path):
-            print("Generating preview map for web interface...")
-            generate_standard_us_map(map_path)
-            print(f"Preview map saved to {map_path}")
-    else:
-        # Generate if doesn't exist
-        if not os.path.exists(map_path):
-            print("Generating standard US map...")
-            generate_standard_us_map(map_path)
-            print(f"Map saved to {map_path}")
-
-    return map_path
-
-
-def get_map_bounds():
-    """Get the standard map bounds"""
-    return US_BOUNDS
+def get_map_bounds(region='us', locations=None):
+    """Get map bounds for a region"""
+    return get_region_bounds(region, locations)

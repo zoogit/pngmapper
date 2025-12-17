@@ -45,7 +45,6 @@ class MarkerStyles(BaseModel):
     showLabels: bool = True
     labelFontSize: int = 10
     labelTextColor: str = "#000000"
-    labelBgColor: str = "#ffffff"
     labelBold: bool = True
 
 class AddressRequest(BaseModel):
@@ -57,6 +56,9 @@ class MapConfig(BaseModel):
     zoom: int
     markerColor: str = "#3388ff"
     markerStyles: MarkerStyles = None
+    region: str = "us"
+    aspectRatio: str = "widescreen"
+    projection: str = "web_mercator"
 
 # Initialize geocoder
 geolocator = Nominatim(user_agent="pngmap_app")
@@ -66,22 +68,30 @@ def read_root():
     return {"message": "PNGMap API is running"}
 
 @app.get("/api/map-image")
-async def get_map_image():
+async def get_map_image(
+    region: str = "us",
+    aspect_ratio: str = "widescreen",
+    projection: str = "web_mercator"
+):
     """
-    Get the standard map image
+    Get a map image for the specified region, aspect ratio, and projection
     """
     try:
-        map_path = get_standard_map_path()
+        map_path = get_standard_map_path(
+            region=region,
+            aspect_ratio=aspect_ratio,
+            projection=projection
+        )
         return FileResponse(map_path, media_type="image/png")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/map-bounds")
-async def get_bounds():
+async def get_bounds(region: str = "us"):
     """
-    Get the standard map bounds
+    Get map bounds for the specified region
     """
-    return get_map_bounds()
+    return get_map_bounds(region=region)
 
 @app.post("/api/upload-template")
 async def upload_template(file: UploadFile = File(...)):
@@ -213,19 +223,51 @@ async def generate_pptx(config: MapConfig):
         # Get marker styles or use defaults
         marker_styles = config.markerStyles.dict() if config.markerStyles else None
         print(f"DEBUG: Received marker styles: {marker_styles}")
-        print(f"DEBUG: Has markerShape? {marker_styles.get('markerShape') if marker_styles else 'N/A'}")
-        print(f"DEBUG: Has showShadow? {marker_styles.get('showShadow') if marker_styles else 'N/A'}")
-        print(f"DEBUG: Has showFill? {marker_styles.get('showFill') if marker_styles else 'N/A'}")
-        print(f"DEBUG: Has showOutline? {marker_styles.get('showOutline') if marker_styles else 'N/A'}")
+        print(f"DEBUG: Region: {config.region}, Aspect: {config.aspectRatio}, Projection: {config.projection}")
 
-        # Check if template exists
-        template_path = 'template.pptx' if os.path.exists('template.pptx') else None
+        # Check for region-specific template
+        template_map = {
+            'us': 'US_map v1.pptx',
+            'world': 'world_map v1.pptx',
+            'china': 'China_map v1.pptx',
+            'north_america': 'North America_map v1.pptx',
+            'south_america': 'South America_map v1.pptx',
+            'europe': 'Europe_map v1.pptx',
+            'brazil': 'Brazil_map v2.pptx',
+            'uk': 'UK_map v1.pptx',
+            'asia': 'Asia_map v1.pptx'
+        }
+
+        # Try region-specific template first
+        template_path = None
+        if config.region in template_map:
+            region_template = template_map[config.region]
+            print(f"DEBUG: Looking for region template: {region_template}")
+            print(f"DEBUG: Checking {region_template}: {os.path.exists(region_template)}")
+            print(f"DEBUG: Checking ../{region_template}: {os.path.exists(f'../{region_template}')}")
+            if os.path.exists(region_template):
+                template_path = region_template
+                print(f"Using region-specific template: {region_template}")
+            elif os.path.exists(f'../{region_template}'):
+                template_path = f'../{region_template}'
+                print(f"Using region-specific template from parent: {template_path}")
+
+        # Fall back to generic template
+        if not template_path:
+            if os.path.exists('template.pptx'):
+                template_path = 'template.pptx'
+                print(f"Using generic template: template.pptx")
+            else:
+                print("No template found, generating map only")
 
         # Create PowerPoint with shapes instead of images
         pptx_path = create_presentation_with_shapes(
             locations,
             template_path=template_path,
-            marker_styles=marker_styles
+            marker_styles=marker_styles,
+            region=config.region,
+            aspect_ratio=config.aspectRatio,
+            projection=config.projection
         )
 
         # Return file

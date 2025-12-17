@@ -171,17 +171,6 @@ function MarkerSettings({ markerStyles, onStylesChange }) {
 
               <div className="setting-group">
                 <label>
-                  <span>Label Background Color</span>
-                  <input
-                    type="color"
-                    value={markerStyles.labelBgColor}
-                    onChange={(e) => handleChange('labelBgColor', e.target.value)}
-                  />
-                </label>
-              </div>
-
-              <div className="setting-group">
-                <label>
                   <input
                     type="checkbox"
                     checked={markerStyles.labelBold}
@@ -207,7 +196,6 @@ function MarkerSettings({ markerStyles, onStylesChange }) {
               showLabels: true,
               labelFontSize: 10,
               labelTextColor: '#000000',
-              labelBgColor: '#ffffff',
               labelBold: true
             })}
           >
