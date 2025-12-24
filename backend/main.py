@@ -1,11 +1,11 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import pandas as pd
 import json
 import os
-from typing import List
+from typing import List, Optional
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 import time
@@ -13,7 +13,7 @@ from services.map_generator import generate_map_image
 from services.pptx_builder import create_presentation, create_presentation_with_shapes
 from services.standard_map import get_standard_map_path, get_map_bounds
 
-app = FastAPI(title="PNGMap API")
+app = FastAPI(title="P&G Mapper API")
 
 # CORS configuration
 app.add_middleware(
@@ -32,40 +32,56 @@ class Location(BaseModel):
     lat: float
     lng: float
     name: str = None
+    # Optional fields from enhanced geocoding (ignored by backend, used by frontend)
+    displayName: Optional[str] = None
+    precision: Optional[str] = None
+    note: Optional[str] = None
+    success: Optional[bool] = None
+    address: Optional[str] = None
+
+    class Config:
+        extra = "ignore"  # Ignore any extra fields not defined in model
 
 class MarkerStyles(BaseModel):
     markerColor: str = "#dc3545"
     markerShape: str = "circle"
-    markerSize: float = 0.2
+    markerSize: float = 0.1
     showFill: bool = True
     outlineColor: str = "#ffffff"
     outlineWidth: float = 1.0
     showOutline: bool = True
     showShadow: bool = False
-    showLabels: bool = True
+    showLabels: bool = False
     labelFontSize: int = 10
     labelTextColor: str = "#000000"
     labelBold: bool = True
+
+class LocationSet(BaseModel):
+    name: str
+    locations: List[Location]
+    markerStyles: MarkerStyles
 
 class AddressRequest(BaseModel):
     addresses: List[str]
 
 class MapConfig(BaseModel):
-    locations: List[Location]
-    center: List[float]
-    zoom: int
-    markerColor: str = "#3388ff"
-    markerStyles: MarkerStyles = None
-    region: str = "us"
-    aspectRatio: str = "widescreen"
-    projection: str = "web_mercator"
+    # Support both old single-set format and new multi-set format for backward compatibility
+    locations: Optional[List[Location]] = Field(default=None)
+    markerStyles: Optional[MarkerStyles] = Field(default=None)
+    locationSets: Optional[List[LocationSet]] = Field(default=None)
+    center: Optional[List[float]] = Field(default=None)
+    zoom: Optional[int] = Field(default=None)
+    markerColor: str = Field(default="#3388ff")
+    region: str = Field(default="us")
+    aspectRatio: str = Field(default="widescreen")
+    projection: str = Field(default="web_mercator")
 
 # Initialize geocoder
 geolocator = Nominatim(user_agent="pngmap_app")
 
 @app.get("/")
 def read_root():
-    return {"message": "PNGMap API is running"}
+    return {"message": "P&G Mapper API is running"}
 
 @app.get("/api/map-image")
 async def get_map_image(
@@ -217,12 +233,46 @@ async def generate_pptx(config: MapConfig):
     Generate PowerPoint with map visualization using shapes
     """
     try:
-        # Convert locations to list of dicts
-        locations = [loc.dict() for loc in config.locations]
+        # Handle both old single-set format and new multi-set format
+        if config.locationSets:
+            # New multi-set format
+            location_sets = [
+                {
+                    'name': loc_set.name,
+                    'locations': [loc.dict() for loc in loc_set.locations],
+                    'markerStyles': loc_set.markerStyles.dict()
+                }
+                for loc_set in config.locationSets
+            ]
+            print(f"DEBUG: Received {len(location_sets)} location sets")
+            for i, loc_set in enumerate(location_sets):
+                print(f"  Set {i+1}: {loc_set['name']} with {len(loc_set['locations'])} locations")
+        else:
+            # Old single-set format - convert to new format for compatibility
+            locations = [loc.dict() for loc in config.locations]
+            marker_styles = config.markerStyles.dict() if config.markerStyles else None
+            location_sets = [
+                {
+                    'name': 'Set 1',
+                    'locations': locations,
+                    'markerStyles': marker_styles or {
+                        'markerColor': '#dc3545',
+                        'markerShape': 'circle',
+                        'markerSize': 0.1,
+                        'showFill': True,
+                        'outlineColor': '#ffffff',
+                        'outlineWidth': 1.0,
+                        'showOutline': True,
+                        'showShadow': False,
+                        'showLabels': False,
+                        'labelFontSize': 10,
+                        'labelTextColor': '#000000',
+                        'labelBold': True
+                    }
+                }
+            ]
+            print(f"DEBUG: Using legacy single-set format")
 
-        # Get marker styles or use defaults
-        marker_styles = config.markerStyles.dict() if config.markerStyles else None
-        print(f"DEBUG: Received marker styles: {marker_styles}")
         print(f"DEBUG: Region: {config.region}, Aspect: {config.aspectRatio}, Projection: {config.projection}")
 
         # Check for region-specific template
@@ -260,11 +310,10 @@ async def generate_pptx(config: MapConfig):
             else:
                 print("No template found, generating map only")
 
-        # Create PowerPoint with shapes instead of images
+        # Create PowerPoint with shapes for multiple location sets
         pptx_path = create_presentation_with_shapes(
-            locations,
+            location_sets=location_sets,
             template_path=template_path,
-            marker_styles=marker_styles,
             region=config.region,
             aspect_ratio=config.aspectRatio,
             projection=config.projection
