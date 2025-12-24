@@ -11,7 +11,7 @@ from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 import time
 from services.map_generator import generate_map_image
 from services.pptx_builder import create_presentation, create_presentation_with_shapes
-from services.standard_map import get_standard_map_path, get_map_bounds
+from services.standard_map import get_standard_map_path, get_map_bounds, detect_us_bounds
 
 app = FastAPI(title="P&G Mapper API")
 
@@ -275,9 +275,13 @@ async def generate_pptx(config: MapConfig):
 
         print(f"DEBUG: Region: {config.region}, Aspect: {config.aspectRatio}, Projection: {config.projection}")
 
+        # Flatten all locations for bounds detection
+        all_locations_flat = []
+        for loc_set in location_sets:
+            all_locations_flat.extend(loc_set['locations'])
+
         # Check for region-specific template
         template_map = {
-            'us': 'US_map v1.pptx',
             'world': 'world_map v1.pptx',
             'china': 'China_map v1.pptx',
             'north_america': 'North America_map v1.pptx',
@@ -288,9 +292,24 @@ async def generate_pptx(config: MapConfig):
             'asia': 'Asia_map v1.pptx'
         }
 
+        # For US region, detect which variant template to use
+        us_template_map = {
+            'continental': 'US_map v1.pptx',
+            'with_alaska': 'US_Alaska_map v1.pptx',
+            'with_hawaii': 'US_Hawaii_map v1.pptx',
+            'full': 'US_Full_map v1.pptx'
+        }
+
         # Try region-specific template first
         template_path = None
-        if config.region in template_map:
+        region_template = None
+
+        if config.region == 'us':
+            # Detect US bounds variant
+            us_variant = detect_us_bounds(all_locations_flat)
+            region_template = us_template_map.get(us_variant, 'US_map v1.pptx')
+            print(f"DEBUG: Detected US variant: {us_variant}, using template: {region_template}")
+        elif config.region in template_map:
             region_template = template_map[config.region]
             print(f"DEBUG: Looking for region template: {region_template}")
             print(f"DEBUG: Checking {region_template}: {os.path.exists(region_template)}")
