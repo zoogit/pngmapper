@@ -4,8 +4,53 @@ from pptx.enum.text import PP_ALIGN
 from pptx.enum.shapes import MSO_SHAPE
 from pptx.dml.color import RGBColor
 from services.coordinate_converter import MapCoordinateConverter
-from services.standard_map import get_standard_map_path, get_map_bounds, ASPECT_RATIOS, generate_map
+from services.standard_map import get_standard_map_path, get_map_bounds, ASPECT_RATIOS, generate_map, REGION_BOUNDS
 import os
+
+# Alaska and Hawaii bounds for insets
+ALASKA_BOUNDS = {
+    'north': 71.5, 'south': 51.0,
+    'west': -168.0, 'east': -130.0
+}
+
+HAWAII_BOUNDS = {
+    'north': 22.5, 'south': 18.5,
+    'west': -160.5, 'east': -154.5
+}
+
+def separate_us_locations(locations):
+    """
+    Separate locations into continental US, Alaska, and Hawaii groups
+
+    Args:
+        locations: List of dicts with 'lat' and 'lng'
+
+    Returns:
+        dict with keys 'continental', 'alaska', 'hawaii'
+    """
+    continental = []
+    alaska = []
+    hawaii = []
+
+    for loc in locations:
+        lat = loc.get('lat')
+        lng = loc.get('lng')
+
+        # Alaska: north of 51°N and west of 130°W
+        if lat and lng and lat > 51.0 and lng < -130.0:
+            alaska.append(loc)
+        # Hawaii: south of 22°N and west of 155°W
+        elif lat and lng and lat < 22.0 and lng < -155.0:
+            hawaii.append(loc)
+        # Continental US
+        else:
+            continental.append(loc)
+
+    return {
+        'continental': continental,
+        'alaska': alaska,
+        'hawaii': hawaii
+    }
 
 def create_presentation(map_image_path, locations):
     """
@@ -194,12 +239,48 @@ def create_presentation_with_shapes(location_sets=None, locations=None, template
         print(f"DEBUG: Created new presentation with {aspect_ratio} aspect ratio")
 
     # SLIDE 2: Generated map (always add this)
-    standard_map_path, map_bounds = get_standard_map_path(
-        region=region,
-        aspect_ratio=aspect_ratio,
-        projection=projection,
-        locations=all_locations
-    )
+    # For US region, check if we need Alaska/Hawaii insets
+    use_insets = False
+    continental_locs = []
+    alaska_locs = []
+    hawaii_locs = []
+
+    if region == 'us':
+        # Separate locations by region
+        separated = separate_us_locations(all_locations)
+        continental_locs = separated['continental']
+        alaska_locs = separated['alaska']
+        hawaii_locs = separated['hawaii']
+
+        # Use insets if we have Alaska or Hawaii locations
+        use_insets = len(alaska_locs) > 0 or len(hawaii_locs) > 0
+
+        if use_insets:
+            print(f"DEBUG: Using inset approach - Continental: {len(continental_locs)}, Alaska: {len(alaska_locs)}, Hawaii: {len(hawaii_locs)}")
+            # Force continental bounds for main map
+            continental_bounds = REGION_BOUNDS['us']['continental']
+            map_bounds = generate_map(
+                bounds=continental_bounds,
+                projection=projection,
+                output_path='continental_map.png'
+            )
+            standard_map_path = 'continental_map.png'
+        else:
+            # No Alaska/Hawaii - use standard approach
+            standard_map_path, map_bounds = get_standard_map_path(
+                region=region,
+                aspect_ratio=aspect_ratio,
+                projection=projection,
+                locations=all_locations
+            )
+    else:
+        # Non-US regions - use standard approach
+        standard_map_path, map_bounds = get_standard_map_path(
+            region=region,
+            aspect_ratio=aspect_ratio,
+            projection=projection,
+            locations=all_locations
+        )
 
     # Create a blank slide for the generated map
     blank_layout = prs.slide_layouts[6] if prs.slide_layouts else None
@@ -213,7 +294,7 @@ def create_presentation_with_shapes(location_sets=None, locations=None, template
     slide_width = aspect['width']
     slide_height = aspect['height']
 
-    # Add map with letterboxing (maintain aspect ratio)
+    # Add main map with letterboxing (maintain aspect ratio)
     padding = 0
     max_width = Inches(slide_width - (2 * padding))
 
@@ -247,12 +328,12 @@ def create_presentation_with_shapes(location_sets=None, locations=None, template
     pic.left = Inches(img_left)
     pic.top = Inches(img_top)
 
-    print(f"DEBUG: Slide 2 - Map positioned at: left={img_left:.2f}\", top={img_top:.2f}\"")
-    print(f"DEBUG: Slide 2 - Map size: {actual_width:.2f}\" x {actual_height:.2f}\"")
-    print(f"DEBUG: Using ORIGINAL bounds (no adjustment): N={map_bounds['north']:.2f}, S={map_bounds['south']:.2f}")
+    print(f"DEBUG: Slide 2 - Main map positioned at: left={img_left:.2f}\", top={img_top:.2f}\"")
+    print(f"DEBUG: Slide 2 - Main map size: {actual_width:.2f}\" x {actual_height:.2f}\"")
+    print(f"DEBUG: Using bounds: N={map_bounds['north']:.2f}, S={map_bounds['south']:.2f}")
 
     # Converter uses ORIGINAL geographic bounds and EXACT image position
-    slide_2_converter = MapCoordinateConverter(
+    main_converter = MapCoordinateConverter(
         map_bounds=map_bounds,  # Original bounds, no adjustment
         slide_bounds={
             'left': img_left,
@@ -263,14 +344,136 @@ def create_presentation_with_shapes(location_sets=None, locations=None, template
         projection=projection
     )
 
-    # Add markers for each location set
-    for loc_set in location_sets:
-        add_markers_to_slide(
-            map_slide_2,
-            loc_set['locations'],
-            slide_2_converter,
-            loc_set['markerStyles']
+    # Add markers to main map
+    if use_insets:
+        # Only add continental markers to main map
+        for loc_set in location_sets:
+            # Filter to only continental locations
+            continental_from_set = [loc for loc in loc_set['locations']
+                                   if loc in continental_locs]
+            if continental_from_set:
+                add_markers_to_slide(
+                    map_slide_2,
+                    continental_from_set,
+                    main_converter,
+                    loc_set['markerStyles']
+                )
+    else:
+        # Add all markers to main map (standard behavior)
+        for loc_set in location_sets:
+            add_markers_to_slide(
+                map_slide_2,
+                loc_set['locations'],
+                main_converter,
+                loc_set['markerStyles']
+            )
+
+    # Add Alaska inset if needed
+    if use_insets and len(alaska_locs) > 0:
+        print(f"DEBUG: Adding Alaska inset with {len(alaska_locs)} locations")
+
+        # Generate Alaska map
+        generate_map(
+            bounds=ALASKA_BOUNDS,
+            projection=projection,
+            output_path='alaska_inset.png'
         )
+        alaska_map_path = 'alaska_inset.png'
+
+        # Inset size: 20% of main map width
+        inset_width = actual_width * 0.20
+
+        # Add Alaska inset (bottom-left corner with padding)
+        alaska_pic = map_slide_2.shapes.add_picture(
+            alaska_map_path,
+            Inches(img_left + 0.2),  # Padding from left
+            Inches(0),  # Temp position
+            width=Inches(inset_width)
+        )
+
+        # Position at bottom-left
+        inset_height = alaska_pic.height.inches
+        alaska_pic.top = Inches(img_top + actual_height - inset_height - 0.2)  # Padding from bottom
+
+        print(f"DEBUG: Alaska inset - size: {inset_width:.2f}\" x {inset_height:.2f}\"")
+
+        # Create converter for Alaska inset
+        alaska_converter = MapCoordinateConverter(
+            map_bounds=ALASKA_BOUNDS,
+            slide_bounds={
+                'left': alaska_pic.left.inches,
+                'top': alaska_pic.top.inches,
+                'width': alaska_pic.width.inches,
+                'height': alaska_pic.height.inches
+            },
+            projection=projection
+        )
+
+        # Add Alaska markers
+        for loc_set in location_sets:
+            alaska_from_set = [loc for loc in loc_set['locations']
+                              if loc in alaska_locs]
+            if alaska_from_set:
+                add_markers_to_slide(
+                    map_slide_2,
+                    alaska_from_set,
+                    alaska_converter,
+                    loc_set['markerStyles']
+                )
+
+    # Add Hawaii inset if needed
+    if use_insets and len(hawaii_locs) > 0:
+        print(f"DEBUG: Adding Hawaii inset with {len(hawaii_locs)} locations")
+
+        # Generate Hawaii map
+        generate_map(
+            bounds=HAWAII_BOUNDS,
+            projection=projection,
+            output_path='hawaii_inset.png'
+        )
+        hawaii_map_path = 'hawaii_inset.png'
+
+        # Inset size: 20% of main map width
+        inset_width = actual_width * 0.20
+
+        # Add Hawaii inset (bottom-right corner with padding)
+        hawaii_pic = map_slide_2.shapes.add_picture(
+            hawaii_map_path,
+            Inches(0),  # Temp position
+            Inches(0),  # Temp position
+            width=Inches(inset_width)
+        )
+
+        # Position at bottom-right
+        inset_height = hawaii_pic.height.inches
+        hawaii_pic.left = Inches(img_left + actual_width - inset_width - 0.2)  # Padding from right
+        hawaii_pic.top = Inches(img_top + actual_height - inset_height - 0.2)  # Padding from bottom
+
+        print(f"DEBUG: Hawaii inset - size: {inset_width:.2f}\" x {inset_height:.2f}\"")
+
+        # Create converter for Hawaii inset
+        hawaii_converter = MapCoordinateConverter(
+            map_bounds=HAWAII_BOUNDS,
+            slide_bounds={
+                'left': hawaii_pic.left.inches,
+                'top': hawaii_pic.top.inches,
+                'width': hawaii_pic.width.inches,
+                'height': hawaii_pic.height.inches
+            },
+            projection=projection
+        )
+
+        # Add Hawaii markers
+        for loc_set in location_sets:
+            hawaii_from_set = [loc for loc in loc_set['locations']
+                              if loc in hawaii_locs]
+            if hawaii_from_set:
+                add_markers_to_slide(
+                    map_slide_2,
+                    hawaii_from_set,
+                    hawaii_converter,
+                    loc_set['markerStyles']
+                )
 
     # Save
     output_path = 'output.pptx'
