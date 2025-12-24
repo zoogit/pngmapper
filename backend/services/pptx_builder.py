@@ -86,16 +86,17 @@ def create_presentation(map_image_path, locations):
     return output_path
 
 
-def create_presentation_with_shapes(locations, template_path=None, map_bounds=None, marker_styles=None,
+def create_presentation_with_shapes(location_sets=None, locations=None, template_path=None, map_bounds=None, marker_styles=None,
                                    region='us', aspect_ratio='widescreen', projection='web_mercator'):
     """
     Create PowerPoint presentation with shapes instead of images
 
     Args:
-        locations: List of location dicts with lat, lng, name
+        location_sets: List of location set dicts, each with 'name', 'locations', and 'markerStyles'
+        locations: (Legacy) List of location dicts with lat, lng, name
         template_path: Optional path to template PPTX with map background
         map_bounds: Optional dict with custom map bounds
-        marker_styles: Optional dict with marker styling options
+        marker_styles: (Legacy) Optional dict with marker styling options
         region: Region code ('us', 'europe', 'world', etc.)
         aspect_ratio: 'widescreen' (16:9) or 'standard' (4:3)
         projection: Projection type ('web_mercator', 'robinson', 'equal_earth')
@@ -103,6 +104,19 @@ def create_presentation_with_shapes(locations, template_path=None, map_bounds=No
     Returns:
         str: Path to created presentation
     """
+    # Handle both old single-set format and new multi-set format
+    if location_sets is None:
+        # Legacy format - convert to new format
+        location_sets = [{
+            'name': 'Set 1',
+            'locations': locations or [],
+            'markerStyles': marker_styles or {}
+        }]
+
+    # Flatten all locations for map bounds calculation
+    all_locations = []
+    for loc_set in location_sets:
+        all_locations.extend(loc_set['locations'])
     # Get aspect ratio dimensions
     aspect = ASPECT_RATIOS.get(aspect_ratio, ASPECT_RATIOS['widescreen'])
 
@@ -124,7 +138,7 @@ def create_presentation_with_shapes(locations, template_path=None, map_bounds=No
                 region=region,
                 aspect_ratio=aspect_ratio,
                 projection=projection,
-                locations=locations
+                locations=all_locations
             )
             print(f"DEBUG: Template bounds: N={template_bounds['north']:.2f}, S={template_bounds['south']:.2f}")
 
@@ -164,7 +178,14 @@ def create_presentation_with_shapes(locations, template_path=None, map_bounds=No
                 projection=projection
             )
 
-            add_markers_to_slide(template_slide, locations, template_converter, marker_styles)
+            # Add markers for each location set
+            for loc_set in location_sets:
+                add_markers_to_slide(
+                    template_slide,
+                    loc_set['locations'],
+                    template_converter,
+                    loc_set['markerStyles']
+                )
     else:
         # No user template, create new presentation
         prs = Presentation()
@@ -177,7 +198,7 @@ def create_presentation_with_shapes(locations, template_path=None, map_bounds=No
         region=region,
         aspect_ratio=aspect_ratio,
         projection=projection,
-        locations=locations
+        locations=all_locations
     )
 
     # Create a blank slide for the generated map
@@ -242,8 +263,14 @@ def create_presentation_with_shapes(locations, template_path=None, map_bounds=No
         projection=projection
     )
 
-    # Add markers to generated map with correct positioning
-    add_markers_to_slide(map_slide_2, locations, slide_2_converter, marker_styles)
+    # Add markers for each location set
+    for loc_set in location_sets:
+        add_markers_to_slide(
+            map_slide_2,
+            loc_set['locations'],
+            slide_2_converter,
+            loc_set['markerStyles']
+        )
 
     # Save
     output_path = 'output.pptx'
@@ -273,13 +300,13 @@ def add_markers_to_slide(slide, locations, converter, marker_styles=None):
     default_styles = {
         'markerColor': '#dc3545',
         'markerShape': 'circle',
-        'markerSize': 0.2,
+        'markerSize': 0.1,
         'showFill': True,
         'outlineColor': '#ffffff',
         'outlineWidth': 1.0,
         'showOutline': True,
         'showShadow': False,
-        'showLabels': True,
+        'showLabels': False,
         'labelFontSize': 10,
         'labelTextColor': '#000000',
         'labelBold': True
