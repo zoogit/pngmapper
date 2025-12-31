@@ -328,6 +328,11 @@ def create_presentation_with_shapes(location_sets=None, locations=None, template
                                 loc_set['markerStyles']
                             )
 
+                    # Remove Alaska inset image from Slide 1 (keep only the markers)
+                    print(f"DEBUG: Removing Alaska inset image from Slide 1")
+                    sp = alaska_pic_s1.element
+                    sp.getparent().remove(sp)
+
                 # Add Hawaii inset if needed (same positioning as Slide 2)
                 if len(template_hawaii_locs) > 0:
                     print(f"DEBUG: Adding Hawaii inset to Slide 1 with {len(template_hawaii_locs)} locations")
@@ -380,6 +385,11 @@ def create_presentation_with_shapes(location_sets=None, locations=None, template
                                 hawaii_converter_s1,
                                 loc_set['markerStyles']
                             )
+
+                    # Remove Hawaii inset image from Slide 1 (keep only the markers)
+                    print(f"DEBUG: Removing Hawaii inset image from Slide 1")
+                    sp = hawaii_pic_s1.element
+                    sp.getparent().remove(sp)
             else:
                 # No insets needed - add all markers to main background
                 # (Covers US without Alaska/Hawaii and non-US regions)
