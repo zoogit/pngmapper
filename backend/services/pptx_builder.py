@@ -172,8 +172,7 @@ def create_presentation_with_shapes(location_sets=None, locations=None, template
         print(f"DEBUG: Loaded template from {template_path}")
 
         # For template slide, we need to match the map positioning
-        # Try to detect if there's an image on the slide and use its bounds
-        # Otherwise, assume the map uses the same aspect ratio fitting as slide 2
+        # Detect the actual background image position in the template
         if len(prs.slides) > 0:
             template_slide = prs.slides[0]
 
@@ -187,26 +186,46 @@ def create_presentation_with_shapes(location_sets=None, locations=None, template
             )
             print(f"DEBUG: Template bounds: N={template_bounds['north']:.2f}, S={template_bounds['south']:.2f}")
 
-            # Calculate letterboxing for template (match slide 2)
-            # Get natural map dimensions
-            from PIL import Image
-            with Image.open(template_map_path) as img:
-                map_aspect = img.width / img.height
+            # Try to find the background map image in the template
+            template_img_left = None
+            template_img_top = None
+            template_img_width = None
+            template_img_height = None
 
-            template_slide_width = aspect['width']
-            template_slide_height = aspect['height']
+            # Look for the largest picture on the slide (likely the map background)
+            for shape in template_slide.shapes:
+                if shape.shape_type == 13:  # Picture type
+                    shape_width = shape.width.inches
+                    shape_height = shape.height.inches
+                    # Use the largest image as the map background
+                    if template_img_width is None or (shape_width * shape_height) > (template_img_width * template_img_height):
+                        template_img_left = shape.left.inches
+                        template_img_top = shape.top.inches
+                        template_img_width = shape_width
+                        template_img_height = shape_height
+                        print(f"DEBUG: Found background image - pos: ({template_img_left:.2f}\", {template_img_top:.2f}\"), size: {template_img_width:.2f}\" x {template_img_height:.2f}\"")
 
-            # Calculate letterboxed dimensions (same as slide 2)
-            template_img_width = template_slide_width
-            template_img_height = template_img_width / map_aspect
+            # If no image found, calculate position (fallback to old behavior)
+            if template_img_left is None:
+                print(f"DEBUG: No background image found in template, calculating position...")
+                from PIL import Image
+                with Image.open(template_map_path) as img:
+                    map_aspect = img.width / img.height
 
-            if template_img_height > template_slide_height:
-                template_img_height = template_slide_height
-                template_img_width = template_img_height * map_aspect
+                template_slide_width = aspect['width']
+                template_slide_height = aspect['height']
 
-            # Center the map
-            template_img_left = (template_slide_width - template_img_width) / 2
-            template_img_top = (template_slide_height - template_img_height) / 2
+                # Calculate letterboxed dimensions
+                template_img_width = template_slide_width
+                template_img_height = template_img_width / map_aspect
+
+                if template_img_height > template_slide_height:
+                    template_img_height = template_slide_height
+                    template_img_width = template_img_height * map_aspect
+
+                # Center the map
+                template_img_left = (template_slide_width - template_img_width) / 2
+                template_img_top = (template_slide_height - template_img_height) / 2
 
             print(f"DEBUG: Slide 1 - Map positioned at: left={template_img_left:.2f}\", top={template_img_top:.2f}\"")
             print(f"DEBUG: Slide 1 - Map size: {template_img_width:.2f}\" x {template_img_height:.2f}\"")
