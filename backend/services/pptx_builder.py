@@ -192,7 +192,12 @@ def create_presentation_with_shapes(location_sets=None, locations=None, template
                 # Use continental bounds only (same as Slide 2)
                 print(f"DEBUG: Using continental bounds for template (insets needed)")
                 template_bounds = REGION_BOUNDS['us']['continental']
-                template_map_path = None  # Not needed, just need bounds
+                # Generate continental map for fallback calculation
+                template_map_path = generate_map(
+                    bounds=template_bounds,
+                    projection=projection,
+                    output_path='continental_map_template.png'
+                )
             else:
                 # Use standard bounds based on all locations
                 template_map_path, template_bounds = get_standard_map_path(
