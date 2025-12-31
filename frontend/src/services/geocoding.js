@@ -1,11 +1,13 @@
 /**
- * Client-side geocoding service using Nominatim
+ * Client-side geocoding service using LocationIQ
  * Handles large batches without server timeout
  * Features cascading fallback strategies for better success rate
  */
 
-const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search'
-const DELAY_MS = 1000 // 1 second delay between requests (Nominatim usage policy)
+// LocationIQ API (2 requests/sec, 5000 requests/day free tier)
+const LOCATIONIQ_URL = 'https://us1.locationiq.com/v1/search.php'
+const LOCATIONIQ_API_KEY = import.meta.env.VITE_LOCATIONIQ_API_KEY || 'pk.4da8ea4760ce54b5a9ce0fc0e64d2486' // Default free tier key
+const DELAY_MS = 500 // 500ms delay between requests (LocationIQ allows 2 req/sec)
 const MAX_RETRIES = 2 // Retry 503 errors up to 2 times
 const RETRY_DELAY_MS = 2000 // Wait 2 seconds before retrying
 
@@ -140,15 +142,11 @@ function extractZipCode(address) {
  * Attempt to geocode with a specific query string
  */
 async function attemptGeocode(query, retryCount = 0) {
-  const url = `${NOMINATIM_URL}?q=${encodeURIComponent(query)}&format=json&limit=1`
+  const url = `${LOCATIONIQ_URL}?key=${LOCATIONIQ_API_KEY}&q=${encodeURIComponent(query)}&format=json&limit=1`
 
-  console.log(`[GEOCODE] URL: ${url}`)
+  console.log(`[GEOCODE] URL: ${url.replace(LOCATIONIQ_API_KEY, 'API_KEY')}`) // Hide API key in logs
 
-  const response = await fetch(url, {
-    headers: {
-      'User-Agent': 'PNGMapper/1.0' // Required by Nominatim usage policy
-    }
-  })
+  const response = await fetch(url)
 
   if (!response.ok) {
     // If 503 (Service Unavailable) and we have retries left, retry after delay
@@ -317,7 +315,7 @@ function delay(ms) {
 }
 
 /**
- * Geocode multiple addresses with progress callback
+ * Geocode multiple addresses with progress callback using parallel batch processing
  *
  * @param {string[]} addresses - Array of addresses to geocode
  * @param {function} onProgress - Callback function(current, total, result)
@@ -325,23 +323,38 @@ function delay(ms) {
  */
 export async function geocodeAddresses(addresses, onProgress = null) {
   const results = []
+  const BATCH_SIZE = 2 // Process 2 addresses in parallel (LocationIQ free tier limit)
+  const BATCH_DELAY = 1000 // Wait 1 second between batches
 
-  for (let i = 0; i < addresses.length; i++) {
-    const address = addresses[i]
+  // Split addresses into batches
+  const batches = []
+  for (let i = 0; i < addresses.length; i += BATCH_SIZE) {
+    batches.push(addresses.slice(i, i + BATCH_SIZE))
+  }
 
-    // Geocode this address
-    const result = await geocodeSingleAddress(address)
-    results.push(result)
+  let completedCount = 0
 
-    // Call progress callback if provided
-    if (onProgress) {
-      onProgress(i + 1, addresses.length, result)
+  // Process each batch
+  for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+    const batch = batches[batchIndex]
+
+    // Process all addresses in this batch in parallel
+    const batchPromises = batch.map(address => geocodeSingleAddress(address))
+    const batchResults = await Promise.all(batchPromises)
+
+    // Add results and call progress callback
+    for (const result of batchResults) {
+      results.push(result)
+      completedCount++
+
+      if (onProgress) {
+        onProgress(completedCount, addresses.length, result)
+      }
     }
 
-    // Respect Nominatim rate limit (1 request per second)
-    // Don't delay after the last request
-    if (i < addresses.length - 1) {
-      await delay(DELAY_MS)
+    // Delay between batches (except after the last batch)
+    if (batchIndex < batches.length - 1) {
+      await delay(BATCH_DELAY)
     }
   }
 
@@ -349,10 +362,19 @@ export async function geocodeAddresses(addresses, onProgress = null) {
 }
 
 /**
- * Estimate time to geocode addresses
+ * Estimate time to geocode addresses with parallel batch processing
  */
 export function estimateGeocodingTime(count) {
-  const seconds = count * (DELAY_MS / 1000)
+  const BATCH_SIZE = 2
+  const BATCH_DELAY_SECONDS = 1
+
+  // Calculate number of batches
+  const numBatches = Math.ceil(count / BATCH_SIZE)
+
+  // Time = (number of batches - 1) * delay between batches
+  // We subtract 1 because there's no delay after the last batch
+  const seconds = Math.max(numBatches - 1, 0) * BATCH_DELAY_SECONDS + 1 // +1 for first batch processing
+
   if (seconds < 60) {
     return `~${Math.ceil(seconds)} seconds`
   } else {

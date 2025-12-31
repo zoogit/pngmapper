@@ -6,8 +6,7 @@ import pandas as pd
 import json
 import os
 from typing import List, Optional
-from geopy.geocoders import Nominatim
-from geopy.exc import GeocoderTimedOut, GeocoderServiceError
+import httpx
 import time
 from services.map_generator import generate_map_image
 from services.pptx_builder import create_presentation, create_presentation_with_shapes
@@ -76,8 +75,9 @@ class MapConfig(BaseModel):
     aspectRatio: str = Field(default="widescreen")
     projection: str = Field(default="web_mercator")
 
-# Initialize geocoder
-geolocator = Nominatim(user_agent="pngmap_app")
+# LocationIQ configuration
+LOCATIONIQ_API_KEY = os.getenv('LOCATIONIQ_API_KEY', 'pk.4da8ea4760ce54b5a9ce0fc0e64d2486')
+LOCATIONIQ_URL = 'https://us1.locationiq.com/v1/search.php'
 
 @app.get("/")
 def read_root():
@@ -135,43 +135,73 @@ async def upload_template(file: UploadFile = File(...)):
 @app.post("/api/geocode")
 async def geocode_addresses(request: AddressRequest):
     """
-    Geocode addresses to lat/lng coordinates
+    Geocode addresses to lat/lng coordinates using LocationIQ with parallel batch processing
     """
+    import re
+    import asyncio
+
+    BATCH_SIZE = 2  # Process 2 addresses in parallel (LocationIQ free tier limit)
+    BATCH_DELAY = 1.0  # Wait 1 second between batches
+
     results = []
 
-    for address in request.addresses:
-        try:
-            # Add delay to respect Nominatim usage policy (1 request per second)
-            time.sleep(1)
+    # Split addresses into batches
+    batches = []
+    for i in range(0, len(request.addresses), BATCH_SIZE):
+        batches.append(request.addresses[i:i + BATCH_SIZE])
 
+    async def geocode_single(client, address):
+        """Geocode a single address"""
+        try:
             # Normalize address format: replace multiple spaces with comma
-            # This allows "Los Angeles    CA" to become "Los Angeles, CA"
-            import re
             normalized_address = re.sub(r'\s{2,}', ', ', address.strip())
 
-            location = geolocator.geocode(normalized_address, timeout=10)
+            # Call LocationIQ API
+            url = f"{LOCATIONIQ_URL}?key={LOCATIONIQ_API_KEY}&q={normalized_address}&format=json&limit=1"
+            response = await client.get(url, timeout=10.0)
 
-            if location:
-                results.append({
-                    'address': address,
-                    'lat': location.latitude,
-                    'lng': location.longitude,
-                    'name': address,
-                    'success': True
-                })
+            if response.status_code == 200:
+                data = response.json()
+                if data and len(data) > 0:
+                    location = data[0]
+                    return {
+                        'address': address,
+                        'lat': float(location['lat']),
+                        'lng': float(location['lon']),
+                        'name': address,
+                        'success': True
+                    }
+                else:
+                    return {
+                        'address': address,
+                        'success': False,
+                        'error': 'Address not found'
+                    }
             else:
-                results.append({
+                return {
                     'address': address,
                     'success': False,
-                    'error': 'Address not found'
-                })
+                    'error': f'HTTP {response.status_code}'
+                }
 
-        except (GeocoderTimedOut, GeocoderServiceError) as e:
-            results.append({
+        except Exception as e:
+            return {
                 'address': address,
                 'success': False,
                 'error': str(e)
-            })
+            }
+
+    # Process batches
+    async with httpx.AsyncClient() as client:
+        for batch_index, batch in enumerate(batches):
+            # Process all addresses in this batch in parallel
+            batch_tasks = [geocode_single(client, address) for address in batch]
+            batch_results = await asyncio.gather(*batch_tasks)
+            results.extend(batch_results)
+
+            # Delay between batches (except after the last batch)
+            if batch_index < len(batches) - 1:
+                await asyncio.sleep(BATCH_DELAY)
 
     return results
 
@@ -295,9 +325,9 @@ async def generate_pptx(config: MapConfig):
         # For US region, detect which variant template to use
         us_template_map = {
             'continental': 'US_map v1.pptx',
-            'with_alaska': 'US_Alaska_map v1.pptx',
-            'with_hawaii': 'US_Hawaii_map v1.pptx',
-            'full': 'US_Full_map v1.pptx'
+            'with_alaska': 'US_map AKHI v1.pptx',  # Use AKHI template when Alaska detected
+            'with_hawaii': 'US_map AKHI v1.pptx',  # Use AKHI template when Hawaii detected
+            'full': 'US_map AKHI v1.pptx'          # Use AKHI template when both detected
         }
 
         # Try region-specific template first
@@ -309,6 +339,19 @@ async def generate_pptx(config: MapConfig):
             us_variant = detect_us_bounds(all_locations_flat)
             region_template = us_template_map.get(us_variant, 'US_map v1.pptx')
             print(f"DEBUG: Detected US variant: {us_variant}, using template: {region_template}")
+            # Check if template exists and set template_path
+            print(f"DEBUG: Checking {region_template}: {os.path.exists(region_template)}")
+            print(f"DEBUG: Checking ../{region_template}: {os.path.exists(f'../{region_template}')}")
+            print(f"DEBUG: Checking Regional Templates/{region_template}: {os.path.exists(f'Regional Templates/{region_template}')}")
+            if os.path.exists(region_template):
+                template_path = region_template
+                print(f"Using US template: {region_template}")
+            elif os.path.exists(f'../{region_template}'):
+                template_path = f'../{region_template}'
+                print(f"Using US template from parent: {template_path}")
+            elif os.path.exists(f'Regional Templates/{region_template}'):
+                template_path = f'Regional Templates/{region_template}'
+                print(f"Using US template from Regional Templates: {template_path}")
         elif config.region in template_map:
             region_template = template_map[config.region]
             print(f"DEBUG: Looking for region template: {region_template}")

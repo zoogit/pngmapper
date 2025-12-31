@@ -13,8 +13,73 @@ function LocationInput({ onLocationsAdded }) {
     const lines = text.trim().split('\n')
     const addresses = []
 
-    for (let line of lines) {
-      const trimmed = line.trim()
+    // State name to abbreviation mapping
+    const stateMap = {
+      'alabama': 'AL', 'alaska': 'AK', 'arizona': 'AZ', 'arkansas': 'AR', 'california': 'CA',
+      'colorado': 'CO', 'connecticut': 'CT', 'delaware': 'DE', 'florida': 'FL', 'georgia': 'GA',
+      'hawaii': 'HI', 'idaho': 'ID', 'illinois': 'IL', 'indiana': 'IN', 'iowa': 'IA',
+      'kansas': 'KS', 'kentucky': 'KY', 'louisiana': 'LA', 'maine': 'ME', 'maryland': 'MD',
+      'massachusetts': 'MA', 'michigan': 'MI', 'minnesota': 'MN', 'mississippi': 'MS', 'missouri': 'MO',
+      'montana': 'MT', 'nebraska': 'NE', 'nevada': 'NV', 'new hampshire': 'NH', 'new jersey': 'NJ',
+      'new mexico': 'NM', 'new york': 'NY', 'north carolina': 'NC', 'north dakota': 'ND', 'ohio': 'OH',
+      'oklahoma': 'OK', 'oregon': 'OR', 'pennsylvania': 'PA', 'rhode island': 'RI', 'south carolina': 'SC',
+      'south dakota': 'SD', 'tennessee': 'TN', 'texas': 'TX', 'utah': 'UT', 'vermont': 'VT',
+      'virginia': 'VA', 'washington': 'WA', 'west virginia': 'WV', 'wisconsin': 'WI', 'wyoming': 'WY',
+      // Canadian provinces
+      'ontario': 'ON', 'quebec': 'QC', 'british columbia': 'BC', 'alberta': 'AB', 'manitoba': 'MB',
+      'saskatchewan': 'SK', 'nova scotia': 'NS', 'new brunswick': 'NB', 'newfoundland': 'NL',
+      'prince edward island': 'PE', 'northwest territories': 'NT', 'yukon': 'YT', 'nunavut': 'NU'
+    }
+
+    // Always treat first line as headers
+    if (lines.length > 1) {
+      // Parse structured data with headers
+      const headers = lines[0].split('\t').map(h => h.trim().toLowerCase())
+
+      // Find column indices
+      const streetIdx = headers.findIndex(h => h.includes('street') || h.includes('address'))
+      const cityIdx = headers.findIndex(h => h.includes('city'))
+      const stateIdx = headers.findIndex(h => h.includes('state') || h.includes('province'))
+      const zipIdx = headers.findIndex(h => h.includes('zip') || h.includes('postal'))
+      const countryIdx = headers.findIndex(h => h.includes('country'))
+
+      // Parse each data row
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim()
+        if (!line) continue
+
+        const fields = line.split('\t').map(f => f.trim())
+
+        // Build structured address
+        const parts = []
+        if (streetIdx >= 0 && fields[streetIdx]) parts.push(fields[streetIdx])
+        if (cityIdx >= 0 && fields[cityIdx]) parts.push(fields[cityIdx])
+
+        // Add state/province with proper abbreviation conversion
+        if (stateIdx >= 0 && fields[stateIdx]) {
+          const stateInput = fields[stateIdx].trim().toLowerCase()
+          // Check if it's a full state name in our map
+          const stateAbbr = stateMap[stateInput] || fields[stateIdx].toUpperCase()
+          parts.push(stateAbbr)
+        }
+
+        // Add ZIP with leading zero fix
+        if (zipIdx >= 0 && fields[zipIdx]) {
+          let zip = fields[zipIdx].replace(/\D/g, '') // Remove non-digits
+          // Add leading zero for 4-digit US ZIP codes
+          if (zip.length === 4) zip = '0' + zip
+          parts.push(zip)
+        }
+
+        if (countryIdx >= 0 && fields[countryIdx]) parts.push(fields[countryIdx])
+
+        if (parts.length > 0) {
+          addresses.push(parts.join(', '))
+        }
+      }
+    } else {
+      // Single line - treat as address without header
+      const trimmed = lines[0]?.trim()
       if (trimmed) {
         addresses.push(trimmed)
       }
@@ -97,20 +162,19 @@ function LocationInput({ onLocationsAdded }) {
   return (
     <div className="location-input">
       <h3>Manual Entry</h3>
-      <p className="input-help">
-        Enter addresses, cities, or locations (one per line):
-        <br />
-        <code>New York, NY</code>
-        <br />
-        <code>1600 Pennsylvania Ave, Washington DC</code>
-      </p>
+
+      <div className="input-help">
+        Paste from Excel or enter tab-separated data. First row should be headers (Street, City, State, ZIP, Country).
+      </div>
 
       <textarea
         value={inputText}
         onChange={(e) => setInputText(e.target.value)}
         onPaste={handlePaste}
-        placeholder="Enter locations (one per line):&#10;New York, NY&#10;Los Angeles, CA&#10;Chicago, IL&#10;&#10;Or paste from Excel!"
-        rows={6}
+        placeholder="Street	City	State	ZIP	Country
+123 Main St	Boston	MA	02101	USA
+456 Oak Ave	Portland	OR	97201	USA"
+        rows={10}
         className="location-textarea"
         disabled={loading}
       />
