@@ -242,14 +242,147 @@ def create_presentation_with_shapes(location_sets=None, locations=None, template
                 projection=projection
             )
 
-            # Add markers for each location set
-            for loc_set in location_sets:
-                add_markers_to_slide(
-                    template_slide,
-                    loc_set['locations'],
-                    template_converter,
-                    loc_set['markerStyles']
-                )
+            # Check if we need Alaska/Hawaii insets on Slide 1
+            if region == 'us':
+                # Separate locations by region
+                separated = separate_us_locations(all_locations)
+                template_continental_locs = separated['continental']
+                template_alaska_locs = separated['alaska']
+                template_hawaii_locs = separated['hawaii']
+                template_use_insets = len(template_alaska_locs) > 0 or len(template_hawaii_locs) > 0
+
+                if template_use_insets:
+                    # Add only continental markers to main background
+                    for loc_set in location_sets:
+                        continental_from_set = [loc for loc in loc_set['locations']
+                                               if loc in template_continental_locs]
+                        if continental_from_set:
+                            add_markers_to_slide(
+                                template_slide,
+                                continental_from_set,
+                                template_converter,
+                                loc_set['markerStyles']
+                            )
+
+                    # Add Alaska inset if needed (same positioning as Slide 2)
+                    if len(template_alaska_locs) > 0:
+                        print(f"DEBUG: Adding Alaska inset to Slide 1 with {len(template_alaska_locs)} locations")
+
+                        # Generate Alaska map (same as Slide 2)
+                        generate_map(
+                            bounds=ALASKA_BOUNDS,
+                            projection=projection,
+                            output_path='alaska_inset_slide1.png'
+                        )
+
+                        # Inset size: 20% of detected background width
+                        inset_width = template_img_width * 0.20
+
+                        # Add Alaska inset (100% off left edge - same as Slide 2)
+                        alaska_left = -inset_width
+                        alaska_pic_s1 = template_slide.shapes.add_picture(
+                            'alaska_inset_slide1.png',
+                            Inches(alaska_left),
+                            Inches(0.2),
+                            width=Inches(inset_width)
+                        )
+
+                        print(f"DEBUG: Slide 1 Alaska inset - size: {inset_width:.2f}\" x {alaska_pic_s1.height.inches:.2f}\"")
+
+                        # Create converter for Alaska inset
+                        alaska_converter_s1 = MapCoordinateConverter(
+                            map_bounds=ALASKA_BOUNDS,
+                            slide_bounds={
+                                'left': alaska_pic_s1.left.inches,
+                                'top': alaska_pic_s1.top.inches,
+                                'width': alaska_pic_s1.width.inches,
+                                'height': alaska_pic_s1.height.inches
+                            },
+                            projection=projection
+                        )
+
+                        # Add Alaska markers
+                        for loc_set in location_sets:
+                            alaska_from_set = [loc for loc in loc_set['locations']
+                                              if loc in template_alaska_locs]
+                            if alaska_from_set:
+                                add_markers_to_slide(
+                                    template_slide,
+                                    alaska_from_set,
+                                    alaska_converter_s1,
+                                    loc_set['markerStyles']
+                                )
+
+                    # Add Hawaii inset if needed (same positioning as Slide 2)
+                    if len(template_hawaii_locs) > 0:
+                        print(f"DEBUG: Adding Hawaii inset to Slide 1 with {len(template_hawaii_locs)} locations")
+
+                        # Generate Hawaii map (same as Slide 2)
+                        generate_map(
+                            bounds=HAWAII_BOUNDS,
+                            projection=projection,
+                            output_path='hawaii_inset_slide1.png'
+                        )
+
+                        # Inset size: 20% of detected background width
+                        inset_width = template_img_width * 0.20
+
+                        # Add Hawaii inset (bottom-right corner - same as Slide 2)
+                        hawaii_pic_s1 = template_slide.shapes.add_picture(
+                            'hawaii_inset_slide1.png',
+                            Inches(0),  # Temp position
+                            Inches(0),  # Temp position
+                            width=Inches(inset_width)
+                        )
+
+                        # Position at bottom-right relative to detected background
+                        inset_height = hawaii_pic_s1.height.inches
+                        hawaii_pic_s1.left = Inches(template_img_left + template_img_width - inset_width - 0.2)
+                        hawaii_pic_s1.top = Inches(template_img_top + template_img_height - inset_height - 0.2)
+
+                        print(f"DEBUG: Slide 1 Hawaii inset - size: {inset_width:.2f}\" x {inset_height:.2f}\"")
+
+                        # Create converter for Hawaii inset
+                        hawaii_converter_s1 = MapCoordinateConverter(
+                            map_bounds=HAWAII_BOUNDS,
+                            slide_bounds={
+                                'left': hawaii_pic_s1.left.inches,
+                                'top': hawaii_pic_s1.top.inches,
+                                'width': hawaii_pic_s1.width.inches,
+                                'height': hawaii_pic_s1.height.inches
+                            },
+                            projection=projection
+                        )
+
+                        # Add Hawaii markers
+                        for loc_set in location_sets:
+                            hawaii_from_set = [loc for loc in loc_set['locations']
+                                              if loc in template_hawaii_locs]
+                            if hawaii_from_set:
+                                add_markers_to_slide(
+                                    template_slide,
+                                    hawaii_from_set,
+                                    hawaii_converter_s1,
+                                    loc_set['markerStyles']
+                                )
+                else:
+                    # No insets needed - add all markers to main background
+                    for loc_set in location_sets:
+                        add_markers_to_slide(
+                            template_slide,
+                            loc_set['locations'],
+                            template_converter,
+                            loc_set['markerStyles']
+                        )
+            else:
+                # Non-US regions - add all markers to main background
+                for loc_set in location_sets:
+                    add_markers_to_slide(
+                        template_slide,
+                        loc_set['locations'],
+                        template_converter,
+                        loc_set['markerStyles']
+                    )
     else:
         # No user template, create new presentation
         prs = Presentation()
