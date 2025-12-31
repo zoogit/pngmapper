@@ -383,15 +383,16 @@ def create_presentation_with_shapes(location_sets=None, locations=None, template
         # Inset size: 20% of main map width
         inset_width = actual_width * 0.20
 
-        # Add Alaska inset (top-left corner with padding)
+        # Add Alaska inset (partially off left edge - reduces on-slide footprint)
+        alaska_left = -inset_width * 0.4  # 40% of Alaska extends off left edge
         alaska_pic = map_slide_2.shapes.add_picture(
             alaska_map_path,
-            Inches(img_left + 0.2),  # Padding from left
-            Inches(img_top + 0.2),  # Padding from top
+            Inches(alaska_left),
+            Inches(0.2),  # 0.2" from slide top edge
             width=Inches(inset_width)
         )
 
-        # Already positioned at top-left
+        # Positioned with 60% visible on slide, 40% off left edge
         inset_height = alaska_pic.height.inches
 
         print(f"DEBUG: Alaska inset - size: {inset_width:.2f}\" x {inset_height:.2f}\"")
