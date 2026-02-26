@@ -12,15 +12,31 @@
   overflow-y: auto;
 }
 
+.logo {
+  width: 100%;
+  max-width: 150px;
+  height: auto;
+  margin-bottom: 1rem;
+  display: block;
+}
+
 .sidebar h1 {
   margin-bottom: 0.5rem;
   color: #212529;
+  font-size: 1.5rem;
 }
 
 .subtitle {
   color: #6c757d;
-  margin-bottom: 1rem;
+  margin-bottom: 0.5rem;
   font-size: 0.9rem;
+}
+
+.screenshot-hint {
+  color: #868e96;
+  font-size: 0.8rem;
+  margin-bottom: 1rem;
+  font-style: italic;
 }
 
 .map-config-section {

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import './MarkerSettings.css'
 
-function MarkerSettings({ markerStyles, onStylesChange }) {
+function MarkerSettings({ markerStyles, onStylesChange, activeSetName }) {
   const [isExpanded, setIsExpanded] = useState(false)
 
   console.log('MarkerSettings component loaded', markerStyles)
@@ -18,11 +18,71 @@ function MarkerSettings({ markerStyles, onStylesChange }) {
 
   return (
     <div className="marker-settings">
+      <h3 className="settings-title">Marker Style Settings</h3>
+      {activeSetName && (
+        <p className="editing-set-indicator">Editing: <strong>{activeSetName}</strong></p>
+      )}
+
+      {/* Primary settings - always visible */}
+      <div className="primary-settings">
+        <div className="setting-group">
+          <label>
+            <span>Marker Color</span>
+            <input
+              type="color"
+              value={markerStyles.markerColor}
+              onChange={(e) => handleChange('markerColor', e.target.value)}
+            />
+          </label>
+        </div>
+
+        <div className="setting-group">
+          <label>
+            <span>Marker Shape</span>
+            <select
+              value={markerStyles.markerShape}
+              onChange={(e) => handleChange('markerShape', e.target.value)}
+            >
+              <option value="circle">Circle</option>
+              <option value="square">Square</option>
+              <option value="triangle">Triangle</option>
+              <option value="star">Star</option>
+            </select>
+          </label>
+        </div>
+
+        <div className="setting-group">
+          <label>
+            <span>Marker Size (inches)</span>
+            <input
+              type="number"
+              min="0.1"
+              max="1.0"
+              step="0.1"
+              value={markerStyles.markerSize}
+              onChange={(e) => handleChange('markerSize', parseFloat(e.target.value))}
+            />
+          </label>
+        </div>
+
+        <div className="setting-group">
+          <label>
+            <input
+              type="checkbox"
+              checked={markerStyles.showLabels}
+              onChange={(e) => handleChange('showLabels', e.target.checked)}
+            />
+            <span>Show Labels</span>
+          </label>
+        </div>
+      </div>
+
+      {/* Advanced settings - collapsible */}
       <button
         className="settings-toggle"
         onClick={() => setIsExpanded(!isExpanded)}
       >
-        {isExpanded ? '▼' : '▶'} Marker Style Settings
+        {isExpanded ? '▼' : '▶'} Advanced Settings
       </button>
 
       {isExpanded && (
@@ -35,48 +95,6 @@ function MarkerSettings({ markerStyles, onStylesChange }) {
                 onChange={(e) => handleChange('showFill', e.target.checked)}
               />
               <span>Show Fill</span>
-            </label>
-          </div>
-
-          {markerStyles.showFill && (
-            <div className="setting-group">
-              <label>
-                <span>Marker Color</span>
-                <input
-                  type="color"
-                  value={markerStyles.markerColor}
-                  onChange={(e) => handleChange('markerColor', e.target.value)}
-                />
-              </label>
-            </div>
-          )}
-
-          <div className="setting-group">
-            <label>
-              <span>Marker Shape</span>
-              <select
-                value={markerStyles.markerShape}
-                onChange={(e) => handleChange('markerShape', e.target.value)}
-              >
-                <option value="circle">Circle</option>
-                <option value="square">Square</option>
-                <option value="triangle">Triangle</option>
-                <option value="star">Star</option>
-              </select>
-            </label>
-          </div>
-
-          <div className="setting-group">
-            <label>
-              <span>Marker Size (inches)</span>
-              <input
-                type="number"
-                min="0.1"
-                max="1.0"
-                step="0.1"
-                value={markerStyles.markerSize}
-                onChange={(e) => handleChange('markerSize', parseFloat(e.target.value))}
-              />
             </label>
           </div>
 
@@ -131,17 +149,6 @@ function MarkerSettings({ markerStyles, onStylesChange }) {
             </label>
           </div>
 
-          <div className="setting-group">
-            <label>
-              <input
-                type="checkbox"
-                checked={markerStyles.showLabels}
-                onChange={(e) => handleChange('showLabels', e.target.checked)}
-              />
-              <span>Show Labels</span>
-            </label>
-          </div>
-
           {markerStyles.showLabels && (
             <>
               <div className="setting-group">
@@ -187,13 +194,13 @@ function MarkerSettings({ markerStyles, onStylesChange }) {
             onClick={() => onStylesChange({
               markerColor: '#dc3545',
               markerShape: 'circle',
-              markerSize: 0.2,
+              markerSize: 0.1,
               showFill: true,
               outlineColor: '#ffffff',
               outlineWidth: 1,
               showOutline: true,
               showShadow: false,
-              showLabels: true,
+              showLabels: false,
               labelFontSize: 10,
               labelTextColor: '#000000',
               labelBold: true

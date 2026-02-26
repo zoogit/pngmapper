@@ -4,28 +4,43 @@ import FileUpload from './components/FileUpload'
 import LocationInput from './components/LocationInput'
 import ExportButton from './components/ExportButton'
 import MarkerSettings from './components/MarkerSettings'
+import PointSetManager from './components/PointSetManager'
+import logo from './HL logo.png'
 import './App.css'
 
+const DEFAULT_MARKER_STYLES = {
+  markerColor: '#0067A5',
+  markerShape: 'circle',
+  markerSize: 0.1,
+  showFill: true,
+  outlineColor: '#ffffff',
+  outlineWidth: 1,
+  showOutline: true,
+  showShadow: false,
+  showLabels: false,
+  labelFontSize: 10,
+  labelTextColor: '#000000',
+  labelBold: true
+}
+
 function App() {
-  const [locations, setLocations] = useState([])
+  // New multi-set state structure
+  const [locationSets, setLocationSets] = useState([
+    {
+      id: '1',
+      name: 'Set 1',
+      locations: [],
+      markerStyles: { ...DEFAULT_MARKER_STYLES },
+      visible: true,
+      expanded: true
+    }
+  ])
+  const [activeSetId, setActiveSetId] = useState('1')
+
   const [mapConfig, setMapConfig] = useState({
     center: [39.8283, -98.5795], // Center of USA
     zoom: 4,
-    markerColor: '#3388ff'
-  })
-  const [markerStyles, setMarkerStyles] = useState({
-    markerColor: '#dc3545',
-    markerShape: 'circle',
-    markerSize: 0.2,
-    showFill: true,
-    outlineColor: '#ffffff',
-    outlineWidth: 1,
-    showOutline: true,
-    showShadow: false,
-    showLabels: true,
-    labelFontSize: 10,
-    labelTextColor: '#000000',
-    labelBold: true
+    markerColor: '#0067A5'
   })
   const [region, setRegion] = useState('us')
 
@@ -33,12 +48,15 @@ function App() {
   const aspectRatio = 'standard'
   const projection = 'web_mercator'
 
-  // Debug: Log markerStyles whenever they change
-  console.log('APP.JSX - Current markerStyles state:', markerStyles)
+  // Get active set
+  const activeSet = locationSets.find(set => set.id === activeSetId) || locationSets[0]
+
+  // Get all locations from all sets for region detection
+  const allLocations = locationSets.flatMap(set => set.locations)
 
   // Auto-detect multi-region locations and switch to world map
   useEffect(() => {
-    if (locations.length === 0) return
+    if (allLocations.length === 0) return
 
     // Define NON-OVERLAPPING region bounds for detection
     const regionBounds = {
@@ -53,7 +71,7 @@ function App() {
 
     // Check which regions contain locations
     const regionsWithLocations = new Set()
-    locations.forEach(loc => {
+    allLocations.forEach(loc => {
       let foundRegion = false
 
       // Check specific regions first (smallest to largest)
@@ -82,10 +100,74 @@ function App() {
       console.log(`Multi-region locations detected: ${Array.from(regionsWithLocations).join(', ')}. Switching to World view.`)
       setRegion('world')
     }
-  }, [locations, region])
+  }, [allLocations, region])
 
+  // Set management functions
+  const handleAddSet = (name) => {
+    const newId = Date.now().toString()
+    const newSet = {
+      id: newId,
+      name,
+      locations: [],
+      markerStyles: { ...DEFAULT_MARKER_STYLES },
+      visible: true,
+      expanded: true
+    }
+
+    setLocationSets(prev => {
+      // Collapse all other sets
+      const updatedSets = prev.map(set => ({ ...set, expanded: false }))
+      return [...updatedSets, newSet]
+    })
+    setActiveSetId(newId)
+  }
+
+  const handleDeleteSet = (setId) => {
+    setLocationSets(prev => {
+      const filtered = prev.filter(set => set.id !== setId)
+      // If we deleted the active set, switch to the first remaining set
+      if (setId === activeSetId && filtered.length > 0) {
+        setActiveSetId(filtered[0].id)
+      }
+      return filtered
+    })
+  }
+
+  const handleToggleVisibility = (setId) => {
+    setLocationSets(prev =>
+      prev.map(set =>
+        set.id === setId ? { ...set, visible: !set.visible } : set
+      )
+    )
+  }
+
+  const handleToggleExpanded = (setId) => {
+    setLocationSets(prev =>
+      prev.map(set =>
+        set.id === setId ? { ...set, expanded: !set.expanded } : set
+      )
+    )
+  }
+
+  const handleUpdateSetName = (setId, name) => {
+    setLocationSets(prev =>
+      prev.map(set =>
+        set.id === setId ? { ...set, name } : set
+      )
+    )
+  }
+
+  const handleSetActiveSet = (setId) => {
+    setActiveSetId(setId)
+  }
+
+  // Location management functions (now for active set)
   const handleDataUploaded = (data) => {
-    setLocations(data)
+    setLocationSets(prev =>
+      prev.map(set =>
+        set.id === activeSetId ? { ...set, locations: data } : set
+      )
+    )
 
     // Auto-center map on first location if available
     if (data.length > 0) {
@@ -97,10 +179,16 @@ function App() {
   }
 
   const handleLocationsAdded = (newLocations) => {
-    setLocations(prev => [...prev, ...newLocations])
+    setLocationSets(prev =>
+      prev.map(set =>
+        set.id === activeSetId
+          ? { ...set, locations: [...set.locations, ...newLocations] }
+          : set
+      )
+    )
 
-    // Auto-center map on first new location if no locations existed
-    if (locations.length === 0 && newLocations.length > 0) {
+    // Auto-center map on first new location if active set was empty
+    if (activeSet.locations.length === 0 && newLocations.length > 0) {
       setMapConfig(prev => ({
         ...prev,
         center: [newLocations[0].lat, newLocations[0].lng]
@@ -108,8 +196,26 @@ function App() {
     }
   }
 
+  const handleMarkerStylesChange = (newStyles) => {
+    setLocationSets(prev =>
+      prev.map(set =>
+        set.id === activeSetId ? { ...set, markerStyles: newStyles } : set
+      )
+    )
+  }
+
   const handleClearAll = () => {
-    setLocations([])
+    setLocationSets([
+      {
+        id: '1',
+        name: 'Set 1',
+        locations: [],
+        markerStyles: { ...DEFAULT_MARKER_STYLES },
+        visible: true,
+        expanded: true
+      }
+    ])
+    setActiveSetId('1')
     setMapConfig(prev => ({
       ...prev,
       center: [39.8283, -98.5795],
@@ -120,8 +226,10 @@ function App() {
   return (
     <div className="app">
       <div className="sidebar">
-        <h1>PNGMap</h1>
+        <img src={logo} alt="Company Logo" className="logo" />
+        <h1>P&G Mapper</h1>
         <p className="subtitle">Map your locations to PowerPoint</p>
+        <p className="screenshot-hint">Use the picture icon on the map to take a screenshot</p>
 
         {/* Map Configuration Selectors */}
         <div className="map-config-section">
@@ -147,9 +255,21 @@ function App() {
 
         <FileUpload onDataUploaded={handleDataUploaded} />
 
-        {locations.length > 0 && (
+        {/* Point Set Manager */}
+        <PointSetManager
+          locationSets={locationSets}
+          activeSetId={activeSetId}
+          onSetActiveSet={handleSetActiveSet}
+          onAddSet={handleAddSet}
+          onDeleteSet={handleDeleteSet}
+          onToggleVisibility={handleToggleVisibility}
+          onToggleExpanded={handleToggleExpanded}
+          onUpdateSetName={handleUpdateSetName}
+        />
+
+        {allLocations.length > 0 && (
           <div className="info">
-            <p><strong>{locations.length}</strong> locations loaded</p>
+            <p><strong>{allLocations.length}</strong> total locations loaded</p>
             <button onClick={handleClearAll} className="clear-all-button">
               Clear All
             </button>
@@ -157,24 +277,24 @@ function App() {
         )}
 
         <MarkerSettings
-          markerStyles={markerStyles}
-          onStylesChange={setMarkerStyles}
+          markerStyles={activeSet.markerStyles}
+          onStylesChange={handleMarkerStylesChange}
+          activeSetName={activeSet.name}
         />
 
         <ExportButton
-          locations={locations}
+          locationSets={locationSets}
           mapConfig={mapConfig}
-          markerStyles={markerStyles}
           region={region}
           aspectRatio={aspectRatio}
           projection={projection}
-          disabled={locations.length === 0}
+          disabled={allLocations.length === 0}
         />
       </div>
 
       <div className="map-container">
         <MapViewer
-          locations={locations}
+          locationSets={locationSets}
           region={region}
           aspectRatio={aspectRatio}
           projection={projection}

@@ -5,11 +5,40 @@
   overflow: hidden;
 }
 
+.settings-title {
+  margin: 0;
+  padding: 0.75rem;
+  background: #f8f9fa;
+  border-bottom: 1px solid #ddd;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #212529;
+}
+
+.editing-set-indicator {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  background: #e7f1ff;
+  border-bottom: 1px solid #b3d7ff;
+  font-size: 0.85rem;
+  color: #004085;
+}
+
+.editing-set-indicator strong {
+  color: #007bff;
+}
+
+.primary-settings {
+  padding: 1rem;
+  background: white;
+}
+
 .settings-toggle {
   width: 100%;
   padding: 0.75rem;
   background: #f8f9fa;
   border: none;
+  border-top: 1px solid #ddd;
   text-align: left;
   cursor: pointer;
   font-weight: 500;

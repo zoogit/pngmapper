@@ -37,7 +37,6 @@ function FileUpload({ onDataUploaded }) {
         disabled={uploading}
         className="file-input"
       />
-      <p className="help-text">Accepts CSV, GeoJSON files</p>
       {error && <p className="error-text">{error}</p>}
     </div>
   )

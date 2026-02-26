@@ -1,17 +1,117 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 import pandas as pd
 import json
 import os
+import uuid
+import time
+import threading
+import logging
+import sys
+from collections import OrderedDict
 from typing import List, Optional
 import httpx
-import time
 from services.map_generator import generate_map_image
 from services.pptx_builder import create_presentation, create_presentation_with_shapes
 from services.standard_map import get_standard_map_path, get_map_bounds, detect_us_bounds
 
+# ---------------------------------------------------------------------------
+# Structured JSON logging
+# ---------------------------------------------------------------------------
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        log_obj = {
+            "ts": self.formatTime(record, datefmt=None),
+            "level": record.levelname,
+            "msg": record.getMessage(),
+        }
+        if hasattr(record, "extra"):
+            log_obj.update(record.extra)
+        return json.dumps(log_obj)
+
+handler = logging.StreamHandler(sys.stdout)
+handler.setFormatter(JsonFormatter())
+logger = logging.getLogger("pngmap")
+logger.setLevel(logging.INFO)
+logger.handlers = [handler]
+logger.propagate = False
+
+def log_request(fields: dict):
+    record = logging.LogRecord("pngmap", logging.INFO, "", 0, "", (), None)
+    record.extra = fields
+    logger.handle(record)
+
+# ---------------------------------------------------------------------------
+# In-memory LRU + TTL geocode cache
+# ---------------------------------------------------------------------------
+class GeocodeLRUCache:
+    """Thread-safe LRU cache with TTL for geocode results."""
+
+    def __init__(self, max_size: int = 5000, ttl_seconds: int = 86400):
+        self.max_size = max_size
+        self.ttl_seconds = ttl_seconds
+        self._cache: OrderedDict = OrderedDict()
+        self._lock = threading.Lock()
+        self.hits = 0
+        self.misses = 0
+
+    def _normalize(self, query: str) -> str:
+        return " ".join(query.lower().strip().split())
+
+    def get(self, query: str):
+        """Return (value, True) on hit, (None, False) on miss/expired."""
+        key = self._normalize(query)
+        with self._lock:
+            if key not in self._cache:
+                self.misses += 1
+                return None, False
+            entry = self._cache[key]
+            if time.time() > entry["expires_at"]:
+                del self._cache[key]
+                self.misses += 1
+                return None, False
+            # Move to end (most recently used)
+            self._cache.move_to_end(key)
+            self.hits += 1
+            return entry["value"], True
+
+    def set(self, query: str, value):
+        key = self._normalize(query)
+        with self._lock:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+            elif len(self._cache) >= self.max_size:
+                self._cache.popitem(last=False)  # Evict oldest
+            self._cache[key] = {
+                "value": value,
+                "expires_at": time.time() + self.ttl_seconds,
+            }
+
+    @property
+    def size(self) -> int:
+        return len(self._cache)
+
+    @property
+    def stats(self) -> dict:
+        total = self.hits + self.misses
+        return {
+            "size": self.size,
+            "max_size": self.max_size,
+            "ttl_seconds": self.ttl_seconds,
+            "hits": self.hits,
+            "misses": self.misses,
+            "hit_rate": round(self.hits / total, 4) if total > 0 else None,
+        }
+
+
+geocode_cache = GeocodeLRUCache(max_size=5000, ttl_seconds=86400)
+_app_start_time = time.time()
+
+# ---------------------------------------------------------------------------
+# FastAPI app
+# ---------------------------------------------------------------------------
 app = FastAPI(title="P&G Mapper API")
 
 # CORS configuration
@@ -27,6 +127,43 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---------------------------------------------------------------------------
+# Request ID + timing middleware
+# ---------------------------------------------------------------------------
+@app.middleware("http")
+async def request_instrumentation(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+    t0 = time.time()
+
+    # Stash on request state so endpoints can access it
+    request.state.request_id = request_id
+    request.state.t0 = t0
+    request.state.locationiq_status = None
+    request.state.t_locationiq_ms = None
+    request.state.cache_hit = None
+
+    response = await call_next(request)
+
+    t_total_ms = round((time.time() - t0) * 1000)
+
+    log_request({
+        "event": "request",
+        "request_id": request_id,
+        "method": request.method,
+        "route": str(request.url.path),
+        "status_code": response.status_code,
+        "t_total_ms": t_total_ms,
+        "cache_hit": request.state.cache_hit,
+        "t_locationiq_ms": request.state.t_locationiq_ms,
+        "locationiq_status": request.state.locationiq_status,
+    })
+
+    response.headers["X-Request-Id"] = request_id
+    return response
+
+# ---------------------------------------------------------------------------
+# Pydantic models
+# ---------------------------------------------------------------------------
 class Location(BaseModel):
     lat: float
     lng: float
@@ -78,10 +215,97 @@ class MapConfig(BaseModel):
 # LocationIQ configuration
 LOCATIONIQ_API_KEY = os.getenv('LOCATIONIQ_API_KEY', 'pk.4da8ea4760ce54b5a9ce0fc0e64d2486')
 LOCATIONIQ_URL = 'https://us1.locationiq.com/v1/search.php'
+LOCATIONIQ_TIMEOUT = 5.0  # seconds
+
+# ---------------------------------------------------------------------------
+# LocationIQ wrapper with timing + error classification
+# ---------------------------------------------------------------------------
+async def call_locationiq(client: httpx.AsyncClient, query: str, request: Request = None) -> dict:
+    """
+    Call LocationIQ for a single query.
+    Returns a dict with: data, status_code, duration_ms, error_type, cache_hit
+    Checks and populates the in-process cache.
+    """
+    import re
+    normalized_query = re.sub(r'\s{2,}', ', ', query.strip())
+
+    # Cache check
+    cached_data, hit = geocode_cache.get(normalized_query)
+    if hit:
+        if request is not None:
+            request.state.cache_hit = True
+            request.state.t_locationiq_ms = 0
+            request.state.locationiq_status = 200
+        return {
+            "data": cached_data,
+            "status_code": 200,
+            "duration_ms": 0,
+            "error_type": None,
+            "cache_hit": True,
+            "normalized_query": normalized_query,
+        }
+
+    # Cache miss — call LocationIQ
+    url = f"{LOCATIONIQ_URL}?key={LOCATIONIQ_API_KEY}&q={normalized_query}&format=json&limit=1"
+    t_liq = time.time()
+    error_type = None
+    status_code = None
+    data = None
+
+    try:
+        response = await client.get(url, timeout=LOCATIONIQ_TIMEOUT)
+        duration_ms = round((time.time() - t_liq) * 1000)
+        status_code = response.status_code
+
+        if response.status_code == 200:
+            data = response.json()
+            # Cache only successful, non-empty results
+            if data and len(data) > 0:
+                geocode_cache.set(normalized_query, data)
+        elif response.status_code == 429:
+            error_type = "rate_limit_429"
+        elif response.status_code >= 500:
+            error_type = f"locationiq_{response.status_code}"
+        else:
+            error_type = f"http_{response.status_code}"
+
+    except httpx.TimeoutException:
+        duration_ms = round((time.time() - t_liq) * 1000)
+        error_type = "timeout"
+    except Exception as e:
+        duration_ms = round((time.time() - t_liq) * 1000)
+        error_type = "network_error"
+
+    if request is not None:
+        request.state.cache_hit = False
+        request.state.t_locationiq_ms = duration_ms
+        request.state.locationiq_status = status_code
+
+    return {
+        "data": data,
+        "status_code": status_code,
+        "duration_ms": duration_ms,
+        "error_type": error_type,
+        "cache_hit": False,
+        "normalized_query": normalized_query,
+    }
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
 @app.get("/")
 def read_root():
     return {"message": "P&G Mapper API is running"}
+
+@app.get("/health")
+def health():
+    """Returns uptime and geocode cache stats."""
+    return {
+        "status": "ok",
+        "uptime_seconds": round(time.time() - _app_start_time),
+        "geocode_cache": geocode_cache.stats,
+    }
 
 @app.get("/api/map-image")
 async def get_map_image(
@@ -133,75 +357,90 @@ async def upload_template(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/geocode")
-async def geocode_addresses(request: AddressRequest):
+async def geocode_addresses(request_body: AddressRequest, request: Request):
     """
-    Geocode addresses to lat/lng coordinates using LocationIQ with parallel batch processing
+    Geocode addresses to lat/lng coordinates using LocationIQ with parallel batch processing.
+    Includes in-memory LRU+TTL caching and structured timing logs.
     """
-    import re
     import asyncio
 
     BATCH_SIZE = 2  # Process 2 addresses in parallel (LocationIQ free tier limit)
     BATCH_DELAY = 1.0  # Wait 1 second between batches
 
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     results = []
 
     # Split addresses into batches
     batches = []
-    for i in range(0, len(request.addresses), BATCH_SIZE):
-        batches.append(request.addresses[i:i + BATCH_SIZE])
+    for i in range(0, len(request_body.addresses), BATCH_SIZE):
+        batches.append(request_body.addresses[i:i + BATCH_SIZE])
+
+    # Per-request counters for the log summary
+    cache_hits = 0
+    cache_misses = 0
+    t_locationiq_total = 0
 
     async def geocode_single(client, address):
-        """Geocode a single address"""
-        try:
-            # Normalize address format: replace multiple spaces with comma
-            normalized_address = re.sub(r'\s{2,}', ', ', address.strip())
+        nonlocal cache_hits, cache_misses, t_locationiq_total
 
-            # Call LocationIQ API
-            url = f"{LOCATIONIQ_URL}?key={LOCATIONIQ_API_KEY}&q={normalized_address}&format=json&limit=1"
-            response = await client.get(url, timeout=10.0)
+        t_addr = time.time()
+        result = await call_locationiq(client, address, request=None)
+        t_processing_ms = round((time.time() - t_addr) * 1000) - result["duration_ms"]
 
-            if response.status_code == 200:
-                data = response.json()
-                if data and len(data) > 0:
-                    location = data[0]
-                    return {
-                        'address': address,
-                        'lat': float(location['lat']),
-                        'lng': float(location['lon']),
-                        'name': address,
-                        'success': True
-                    }
-                else:
-                    return {
-                        'address': address,
-                        'success': False,
-                        'error': 'Address not found'
-                    }
-            else:
-                return {
-                    'address': address,
-                    'success': False,
-                    'error': f'HTTP {response.status_code}'
-                }
+        if result["cache_hit"]:
+            cache_hits += 1
+        else:
+            cache_misses += 1
+            t_locationiq_total += result["duration_ms"]
 
-        except Exception as e:
+        log_request({
+            "event": "geocode_single",
+            "request_id": request_id,
+            "query": address,
+            "normalized_query": result["normalized_query"],
+            "cache_hit": result["cache_hit"],
+            "locationiq_status": result["status_code"],
+            "error_type": result["error_type"],
+            "t_locationiq_ms": result["duration_ms"],
+            "t_processing_ms": t_processing_ms,
+        })
+
+        data = result["data"]
+        if result["status_code"] == 200 and data and len(data) > 0:
+            location = data[0]
+            return {
+                'address': address,
+                'lat': float(location['lat']),
+                'lng': float(location['lon']),
+                'name': address,
+                'success': True
+            }
+        elif result["error_type"]:
             return {
                 'address': address,
                 'success': False,
-                'error': str(e)
+                'error': result["error_type"]
+            }
+        else:
+            return {
+                'address': address,
+                'success': False,
+                'error': 'Address not found'
             }
 
     # Process batches
     async with httpx.AsyncClient() as client:
         for batch_index, batch in enumerate(batches):
-            # Process all addresses in this batch in parallel
             batch_tasks = [geocode_single(client, address) for address in batch]
             batch_results = await asyncio.gather(*batch_tasks)
             results.extend(batch_results)
 
-            # Delay between batches (except after the last batch)
             if batch_index < len(batches) - 1:
                 await asyncio.sleep(BATCH_DELAY)
+
+    # Update middleware state with aggregate stats for this request
+    request.state.cache_hit = cache_hits > 0 and cache_misses == 0
+    request.state.t_locationiq_ms = t_locationiq_total
 
     return results
 
