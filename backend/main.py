@@ -301,6 +301,30 @@ async def call_locationiq(client: httpx.AsyncClient, query: str, request: Reques
 def read_root():
     return {"message": "P&G Mapper API is running"}
 
+@app.get("/debug-locationiq")
+async def debug_locationiq(q: str = "New York"):
+    """Test LocationIQ directly and return the raw response for debugging."""
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(
+                LOCATIONIQ_URL,
+                params={"key": LOCATIONIQ_API_KEY, "q": q, "format": "json", "limit": 1},
+                timeout=10.0,
+            )
+            try:
+                body = response.json()
+            except Exception:
+                body = response.text
+            return {
+                "status_code": response.status_code,
+                "key_used": LOCATIONIQ_API_KEY[:12] + "...",
+                "query": q,
+                "response_body": body,
+                "headers": dict(response.headers),
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
 @app.get("/health")
 def health():
     """Returns uptime and geocode cache stats."""
