@@ -359,89 +359,138 @@ async def upload_template(file: UploadFile = File(...)):
 @app.post("/api/geocode")
 async def geocode_addresses(request_body: AddressRequest, request: Request):
     """
-    Geocode addresses to lat/lng coordinates using LocationIQ with parallel batch processing.
-    Includes in-memory LRU+TTL caching and structured timing logs.
+    Geocode addresses using multi-strategy fallback (mirrors frontend logic).
+    Strategies: exact → simplified → street+city → city+state → zip only.
+    All LocationIQ calls go through the in-memory LRU cache.
     """
     import asyncio
+    import re as _re
 
-    BATCH_SIZE = 2  # Process 2 addresses in parallel (LocationIQ free tier limit)
-    BATCH_DELAY = 1.0  # Wait 1 second between batches
+    STRATEGY_DELAY = 0.35   # seconds between failed strategy attempts
+    ADDRESS_DELAY  = 0.55   # seconds between addresses
 
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+
+    # ---- address manipulation helpers ----
+
+    def fix_zip(addr: str) -> str:
+        return _re.sub(r'\b([A-Z]{2})\s+(\d{4})\b', r'\1 0\2', addr)
+
+    def simplify(addr: str) -> str:
+        s = addr
+        s = _re.sub(r'\b(Building|Bldg\.?)\s+[A-Z0-9]+,?\s*', '', s, flags=_re.IGNORECASE)
+        s = _re.sub(r',?\s*(Suite|Unit|Ste\.?|#)\s+[A-Z0-9]+', '', s, flags=_re.IGNORECASE)
+        s = _re.sub(r',?\s*[A-Z][a-z]+\s+(Gate|Ward)\s+Industrial\s+Park,?\s*', '', s, flags=_re.IGNORECASE)
+        s = _re.sub(r',\s*,', ',', s)
+        s = _re.sub(r'\s+,', ',', s)
+        s = _re.sub(r',\s+', ', ', s)
+        return s.strip()
+
+    def extract_city_state(addr: str):
+        m = _re.search(r'([A-Za-z\s]+?),?\s+([A-Z]{2})\s+\d{5}(?:-\d{4})?', addr)
+        if m:
+            words = m.group(1).strip().split()
+            return f"{' '.join(words[-3:])}, {m.group(2)}"
+        ca = _re.search(r'([A-Za-z\s]+?)\s+(ON|AB|BC|MB|NB|NL|NS|NT|NU|PE|QC|SK|YT)\s+[A-Z0-9]{3}\s*[A-Z0-9]{3}', addr)
+        if ca:
+            words = ca.group(1).strip().split()
+            return f"{' '.join(words[-3:])}, {ca.group(2)}"
+        parts = [p.strip() for p in addr.split(',')]
+        if len(parts) >= 2:
+            city = _re.sub(r'\d{5}(-\d{4})?', '', parts[-2]).strip()
+            state_raw = _re.sub(r'\d{5}(-\d{4})?', '', parts[-1]).strip()
+            sm = _re.search(r'\b([A-Z]{2})\b', state_raw)
+            return f"{city}, {sm.group(1)}" if sm else f"{city}, {state_raw}"
+        return None
+
+    def extract_street_city(addr: str):
+        parts = [p.strip() for p in addr.split(',')]
+        if len(parts) >= 3:
+            last = _re.sub(r'\d{5}(-\d{4})?', '', parts[-1]).strip()
+            return f"{parts[-2]}, {last}"
+        return None
+
+    def extract_zip(addr: str):
+        m = _re.search(r'\b(\d{5})(?:-\d{4})?\b', addr)
+        if m: return m.group(1)
+        m = _re.search(r'\b([A-Z]\d[A-Z]\s*\d[A-Z]\d)\b', addr)
+        if m: return m.group(1)
+        return None
+
+    def normalize(addr: str) -> str:
+        n = _re.sub(r'[\t\s]{2,}', ', ', addr.strip())
+        return fix_zip(n)
+
+    # ---- single address with 5-strategy fallback ----
+
+    async def geocode_with_fallback(client: httpx.AsyncClient, address: str) -> dict:
+        normalized = normalize(address)
+        strategies = []
+
+        # Build strategy list (deduplicated, preserving order)
+        seen = set()
+        def add(q, precision, note=None):
+            if q and q not in seen:
+                seen.add(q)
+                strategies.append((q, precision, note))
+
+        add(normalized,                        'exact',      None)
+        add(simplify(normalized),              'simplified', 'Building/suite removed')
+        add(extract_street_city(normalized),   'street',     'Street+city only')
+        add(extract_city_state(normalized),    'city',       'City/region only')
+        add(extract_zip(normalized),           'zipcode',    'ZIP code area only')
+
+        for i, (query, precision, note) in enumerate(strategies):
+            if i > 0:
+                await asyncio.sleep(STRATEGY_DELAY)
+
+            liq = await call_locationiq(client, query)
+            log_request({
+                "event": "geocode_strategy",
+                "request_id": request_id,
+                "address": address,
+                "query": query,
+                "strategy": precision,
+                "cache_hit": liq["cache_hit"],
+                "locationiq_status": liq["status_code"],
+                "error_type": liq["error_type"],
+                "t_locationiq_ms": liq["duration_ms"],
+            })
+
+            data = liq["data"]
+            if liq["status_code"] == 200 and data and len(data) > 0:
+                loc = data[0]
+                result = {
+                    "address":     address,
+                    "lat":         float(loc["lat"]),
+                    "lng":         float(loc["lon"]),
+                    "name":        normalized,
+                    "success":     True,
+                    "displayName": loc.get("display_name", ""),
+                    "precision":   precision,
+                }
+                if note:
+                    result["note"] = note
+                return result
+
+        return {"address": address, "success": False,
+                "error": "Address not found after trying all fallback strategies"}
+
+    # ---- process all addresses sequentially ----
     results = []
-
-    # Split addresses into batches
-    batches = []
-    for i in range(0, len(request_body.addresses), BATCH_SIZE):
-        batches.append(request_body.addresses[i:i + BATCH_SIZE])
-
-    # Per-request counters for the log summary
     cache_hits = 0
     cache_misses = 0
-    t_locationiq_total = 0
+    t_liq_total = 0
 
-    async def geocode_single(client, address):
-        nonlocal cache_hits, cache_misses, t_locationiq_total
-
-        t_addr = time.time()
-        result = await call_locationiq(client, address, request=None)
-        t_processing_ms = round((time.time() - t_addr) * 1000) - result["duration_ms"]
-
-        if result["cache_hit"]:
-            cache_hits += 1
-        else:
-            cache_misses += 1
-            t_locationiq_total += result["duration_ms"]
-
-        log_request({
-            "event": "geocode_single",
-            "request_id": request_id,
-            "query": address,
-            "normalized_query": result["normalized_query"],
-            "cache_hit": result["cache_hit"],
-            "locationiq_status": result["status_code"],
-            "error_type": result["error_type"],
-            "t_locationiq_ms": result["duration_ms"],
-            "t_processing_ms": t_processing_ms,
-        })
-
-        data = result["data"]
-        if result["status_code"] == 200 and data and len(data) > 0:
-            location = data[0]
-            return {
-                'address': address,
-                'lat': float(location['lat']),
-                'lng': float(location['lon']),
-                'name': address,
-                'success': True
-            }
-        elif result["error_type"]:
-            return {
-                'address': address,
-                'success': False,
-                'error': result["error_type"]
-            }
-        else:
-            return {
-                'address': address,
-                'success': False,
-                'error': 'Address not found'
-            }
-
-    # Process batches
     async with httpx.AsyncClient() as client:
-        for batch_index, batch in enumerate(batches):
-            batch_tasks = [geocode_single(client, address) for address in batch]
-            batch_results = await asyncio.gather(*batch_tasks)
-            results.extend(batch_results)
+        for idx, address in enumerate(request_body.addresses):
+            result = await geocode_with_fallback(client, address)
+            results.append(result)
+            if idx < len(request_body.addresses) - 1:
+                await asyncio.sleep(ADDRESS_DELAY)
 
-            if batch_index < len(batches) - 1:
-                await asyncio.sleep(BATCH_DELAY)
-
-    # Update middleware state with aggregate stats for this request
-    request.state.cache_hit = cache_hits > 0 and cache_misses == 0
-    request.state.t_locationiq_ms = t_locationiq_total
-
+    request.state.cache_hit = None
+    request.state.t_locationiq_ms = None
     return results
 
 @app.post("/api/upload")
