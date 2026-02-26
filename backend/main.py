@@ -246,14 +246,17 @@ async def call_locationiq(client: httpx.AsyncClient, query: str, request: Reques
         }
 
     # Cache miss — call LocationIQ
-    url = f"{LOCATIONIQ_URL}?key={LOCATIONIQ_API_KEY}&q={normalized_query}&format=json&limit=1"
     t_liq = time.time()
     error_type = None
     status_code = None
     data = None
 
     try:
-        response = await client.get(url, timeout=LOCATIONIQ_TIMEOUT)
+        response = await client.get(
+            LOCATIONIQ_URL,
+            params={"key": LOCATIONIQ_API_KEY, "q": normalized_query, "format": "json", "limit": 1},
+            timeout=LOCATIONIQ_TIMEOUT,
+        )
         duration_ms = round((time.time() - t_liq) * 1000)
         status_code = response.status_code
 
