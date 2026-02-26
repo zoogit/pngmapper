@@ -212,17 +212,19 @@ class MapConfig(BaseModel):
     aspectRatio: str = Field(default="widescreen")
     projection: str = Field(default="web_mercator")
 
-# LocationIQ configuration
-LOCATIONIQ_API_KEY = os.getenv('LOCATIONIQ_API_KEY', 'pk.4da8ea4760ce54b5a9ce0fc0e64d2486')
-LOCATIONIQ_URL = 'https://us1.locationiq.com/v1/search.php'
-LOCATIONIQ_TIMEOUT = 5.0  # seconds
+# Nominatim (OpenStreetMap) configuration — no API key required
+NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search'
+NOMINATIM_TIMEOUT = 10.0  # seconds
+NOMINATIM_HEADERS = {
+    "User-Agent": "PNGMapper/1.0 (pngmapper.netlify.app)"
+}
 
 # ---------------------------------------------------------------------------
-# LocationIQ wrapper with timing + error classification
+# Nominatim wrapper with timing + error classification
 # ---------------------------------------------------------------------------
 async def call_locationiq(client: httpx.AsyncClient, query: str, request: Request = None) -> dict:
     """
-    Call LocationIQ for a single query.
+    Call Nominatim (OpenStreetMap) for a single query.
     Returns a dict with: data, status_code, duration_ms, error_type, cache_hit
     Checks and populates the in-process cache.
     """
@@ -245,7 +247,7 @@ async def call_locationiq(client: httpx.AsyncClient, query: str, request: Reques
             "normalized_query": normalized_query,
         }
 
-    # Cache miss — call LocationIQ
+    # Cache miss — call Nominatim
     t_liq = time.time()
     error_type = None
     status_code = None
@@ -253,9 +255,10 @@ async def call_locationiq(client: httpx.AsyncClient, query: str, request: Reques
 
     try:
         response = await client.get(
-            LOCATIONIQ_URL,
-            params={"key": LOCATIONIQ_API_KEY, "q": normalized_query, "format": "json", "limit": 1},
-            timeout=LOCATIONIQ_TIMEOUT,
+            NOMINATIM_URL,
+            params={"q": normalized_query, "format": "json", "limit": 1},
+            headers=NOMINATIM_HEADERS,
+            timeout=NOMINATIM_TIMEOUT,
         )
         duration_ms = round((time.time() - t_liq) * 1000)
         status_code = response.status_code
@@ -268,7 +271,7 @@ async def call_locationiq(client: httpx.AsyncClient, query: str, request: Reques
         elif response.status_code == 429:
             error_type = "rate_limit_429"
         elif response.status_code >= 500:
-            error_type = f"locationiq_{response.status_code}"
+            error_type = f"nominatim_{response.status_code}"
         else:
             error_type = f"http_{response.status_code}"
 
@@ -301,14 +304,15 @@ async def call_locationiq(client: httpx.AsyncClient, query: str, request: Reques
 def read_root():
     return {"message": "P&G Mapper API is running"}
 
-@app.get("/debug-locationiq")
-async def debug_locationiq(q: str = "New York"):
-    """Test LocationIQ directly and return the raw response for debugging."""
+@app.get("/debug-geocode")
+async def debug_geocode(q: str = "New York"):
+    """Test Nominatim directly and return the raw response for debugging."""
     async with httpx.AsyncClient() as client:
         try:
             response = await client.get(
-                LOCATIONIQ_URL,
-                params={"key": LOCATIONIQ_API_KEY, "q": q, "format": "json", "limit": 1},
+                NOMINATIM_URL,
+                params={"q": q, "format": "json", "limit": 1},
+                headers=NOMINATIM_HEADERS,
                 timeout=10.0,
             )
             try:
@@ -317,10 +321,9 @@ async def debug_locationiq(q: str = "New York"):
                 body = response.text
             return {
                 "status_code": response.status_code,
-                "key_used": LOCATIONIQ_API_KEY[:12] + "...",
+                "service": "Nominatim (OpenStreetMap)",
                 "query": q,
                 "response_body": body,
-                "headers": dict(response.headers),
             }
         except Exception as e:
             return {"error": str(e)}
@@ -393,8 +396,8 @@ async def geocode_addresses(request_body: AddressRequest, request: Request):
     import asyncio
     import re as _re
 
-    STRATEGY_DELAY = 0.35   # seconds between failed strategy attempts
-    ADDRESS_DELAY  = 0.55   # seconds between addresses
+    STRATEGY_DELAY = 1.1    # seconds between failed strategy attempts (Nominatim: 1 req/sec)
+    ADDRESS_DELAY  = 1.1    # seconds between addresses
 
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
 
