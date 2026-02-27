@@ -238,16 +238,18 @@ def is_us_canada(addr: str) -> bool:
 # ---------------------------------------------------------------------------
 # Dual-provider geocoder: Geocodio (US/Canada) + Nominatim (international)
 # ---------------------------------------------------------------------------
-async def call_locationiq(client: httpx.AsyncClient, query: str, request: Request = None) -> dict:
+async def call_locationiq(client: httpx.AsyncClient, query: str, request: Request = None,
+                          force_nominatim: bool = False) -> dict:
     """
     Route to Geocodio (US/Canada) or Nominatim (international).
+    Pass force_nominatim=True to bypass routing and always use Nominatim.
     Geocodio response is normalised to Nominatim-style list:
       [{"lat": "...", "lon": "...", "display_name": "..."}]
     Returns: data, status_code, duration_ms, error_type, cache_hit, provider
     """
     import re
     normalized_query = re.sub(r'\s{2,}', ', ', query.strip())
-    use_geocodio = is_us_canada(normalized_query)
+    use_geocodio = not force_nominatim and is_us_canada(normalized_query)
 
     # Cache check
     cached_data, hit = geocode_cache.get(normalized_query)
@@ -567,6 +569,39 @@ async def geocode_addresses(request_body: AddressRequest, request: Request):
                 if note:
                     result["note"] = note
                 return result
+
+        # If Geocodio exhausted all strategies, try Nominatim as last resort
+        if is_us_canada(normalized):
+            nom_queries = [extract_city_state(normalized), extract_zip(normalized), normalized]
+            for nom_q in nom_queries:
+                if not nom_q:
+                    continue
+                await asyncio.sleep(NOMINATIM_DELAY)
+                liq = await call_locationiq(client, nom_q, force_nominatim=True)
+                log_request({
+                    "event": "geocode_strategy",
+                    "request_id": request_id,
+                    "address": address,
+                    "query": nom_q,
+                    "strategy": "nominatim_fallback",
+                    "cache_hit": liq["cache_hit"],
+                    "locationiq_status": liq["status_code"],
+                    "error_type": liq["error_type"],
+                    "t_locationiq_ms": liq["duration_ms"],
+                })
+                data = liq["data"]
+                if liq["status_code"] == 200 and data and len(data) > 0:
+                    loc = data[0]
+                    return {
+                        "address":     address,
+                        "lat":         float(loc["lat"]),
+                        "lng":         float(loc["lon"]),
+                        "name":        normalized,
+                        "success":     True,
+                        "displayName": loc.get("display_name", ""),
+                        "precision":   "nominatim_fallback",
+                        "note":        "Geocodio failed; resolved via Nominatim",
+                    }
 
         return {"address": address, "success": False,
                 "error": "Address not found after trying all fallback strategies"}
