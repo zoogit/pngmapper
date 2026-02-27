@@ -10,7 +10,33 @@ function LocationInput({ onLocationsAdded }) {
   const [estimatedTime, setEstimatedTime] = useState('')
 
   const parseAddresses = (text) => {
-    const lines = text.trim().split('\n')
+    // Merge Excel multiline cells: when a cell contains a newline (Alt+Enter),
+    // Excel wraps it in quotes on paste. Lines starting with " but not ending
+    // with a tab-terminated close-quote are continuations of the previous row.
+    const rawLines = text.trim().split('\n')
+    const mergedLines = []
+    let buffer = null
+    for (const line of rawLines) {
+      if (buffer !== null) {
+        // Inside a quoted multiline cell — append to buffer
+        const closeIdx = line.lastIndexOf('"')
+        if (closeIdx >= 0 && (closeIdx === line.length - 1 || line[closeIdx + 1] === '\t')) {
+          buffer += ', ' + line.slice(0, closeIdx).trim()
+          mergedLines.push(buffer)
+          buffer = null
+        } else {
+          buffer += ', ' + line.trim()
+        }
+      } else if (line.startsWith('"') && !line.match(/^"[^"]*"(\t|$)/)) {
+        // Starts with quote but not a complete quoted field — begin buffering
+        buffer = line.slice(1).trim()
+      } else {
+        mergedLines.push(line)
+      }
+    }
+    if (buffer !== null) mergedLines.push(buffer)
+
+    const lines = mergedLines
     const addresses = []
 
     // State name to abbreviation mapping
@@ -48,7 +74,8 @@ function LocationInput({ onLocationsAdded }) {
         const line = lines[i].trim()
         if (!line) continue
 
-        const fields = line.split('\t').map(f => f.trim())
+        // Strip surrounding CSV quotes from each field value
+        const fields = line.split('\t').map(f => f.trim().replace(/^"|"$/g, '').trim())
 
         // Build structured address
         const parts = []
@@ -71,7 +98,8 @@ function LocationInput({ onLocationsAdded }) {
           parts.push(zip)
         }
 
-        if (countryIdx >= 0 && fields[countryIdx]) parts.push(fields[countryIdx])
+        // Don't add country — the state/province code already identifies US/Canada
+        // and appending "US" breaks geocoding provider detection
 
         if (parts.length > 0) {
           addresses.push(parts.join(', '))

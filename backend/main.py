@@ -232,7 +232,10 @@ US_CA_CODES = {
 }
 
 def is_us_canada(addr: str) -> bool:
-    """Return True if any comma-separated part matches a US state or Canadian province code."""
+    """Return True if address contains a US state/Canadian province code, or ends with US/Canada."""
+    import re as _r
+    if _r.search(r',\s*(US|USA|United States|Canada)\s*"?\s*$', addr, _r.IGNORECASE):
+        return True
     return any(p.strip().upper() in US_CA_CODES for p in addr.split(','))
 
 # ---------------------------------------------------------------------------
@@ -492,7 +495,15 @@ async def geocode_addresses(request_body: AddressRequest, request: Request):
         return None
 
     def normalize(addr: str) -> str:
-        return fix_zip(_re.sub(r'[\t\s]{2,}', ', ', addr.strip()))
+        # Strip surrounding CSV quotes
+        addr = addr.strip().strip('"').strip()
+        # Collapse whitespace/tabs to commas
+        n = _re.sub(r'[\t\s]{2,}', ', ', addr)
+        # Strip country name suffix twice (handles "..., Canada, US" double suffix)
+        for _ in range(2):
+            n = _re.sub(r',\s*(US|USA|United States|Canada)\s*"?\s*$', '', n, flags=_re.IGNORECASE).strip()
+            n = n.rstrip('"').strip()
+        return fix_zip(n)
 
     # ---- Nominatim fallback: try city+state, zip, then full address ----
 
