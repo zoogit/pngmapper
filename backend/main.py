@@ -214,7 +214,7 @@ class MapConfig(BaseModel):
 
 # Geocodio — US + Canada
 GEOCODIO_API_KEY = os.getenv('GEOCODIO_API_KEY', 'c664e76745a669b76174a414b7761eac9e4b4c9')
-GEOCODIO_URL = 'https://api.geocod.io/v1.7/geocode'
+GEOCODIO_URL = 'https://api.geocod.io/v1.10/geocode'
 GEOCODIO_TIMEOUT = 10.0
 
 # Nominatim (OpenStreetMap) — international fallback, no key required
@@ -454,110 +454,77 @@ async def upload_template(file: UploadFile = File(...)):
 @app.post("/api/geocode")
 async def geocode_addresses(request_body: AddressRequest, request: Request):
     """
-    Geocode addresses using multi-strategy fallback (mirrors frontend logic).
-    Strategies: exact → simplified → street+city → city+state → zip only.
-    All LocationIQ calls go through the in-memory LRU cache.
+    Geocode addresses using two providers:
+      - US/Canada → Geocodio batch (all addresses in one HTTP request)
+      - International → Nominatim sequential (1 req/sec limit)
+      - Geocodio misses → Nominatim fallback (city+state, zip strategies)
     """
     import asyncio
     import re as _re
 
-    NOMINATIM_DELAY = 1.1   # Nominatim enforces 1 req/sec; respect it
-    GEOCODIO_DELAY  = 0.05  # Geocodio is bulk-friendly; tiny delay avoids hammering
+    NOMINATIM_DELAY = 1.1   # Nominatim enforces 1 req/sec
 
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
 
-    # ---- address manipulation helpers ----
+    # ---- address helpers ----
 
     def fix_zip(addr: str) -> str:
         return _re.sub(r'\b([A-Z]{2})\s+(\d{4})\b', r'\1 0\2', addr)
 
-    def simplify(addr: str) -> str:
-        s = addr
-        s = _re.sub(r'\b(Building|Bldg\.?)\s+[A-Z0-9]+,?\s*', '', s, flags=_re.IGNORECASE)
-        s = _re.sub(r',?\s*(Suite|Unit|Ste\.?|#)\s+[A-Z0-9]+', '', s, flags=_re.IGNORECASE)
-        s = _re.sub(r',?\s*[A-Z][a-z]+\s+(Gate|Ward)\s+Industrial\s+Park,?\s*', '', s, flags=_re.IGNORECASE)
-        s = _re.sub(r',\s*,', ',', s)
-        s = _re.sub(r'\s+,', ',', s)
-        s = _re.sub(r',\s+', ', ', s)
-        return s.strip()
-
     def extract_city_state(addr: str):
-        # Works on comma-separated addresses: "street, city, ST, zip" → "city, ST"
         parts = [p.strip() for p in addr.split(',')]
         if len(parts) >= 3:
-            # state is parts[-2], city is parts[-3] (strip any digits)
             state = _re.sub(r'\d+', '', parts[-2]).strip()
             city  = _re.sub(r'\d+', '', parts[-3]).strip()
             if city and state:
                 return f"{city}, {state}"
-        # Canadian postal: "street, city, ON, A1B 2C3" handled same way above
-        return None
-
-    def extract_street_city(addr: str):
-        # "street, city, ST, zip" → "street, city"  (drop state + zip)
-        parts = [p.strip() for p in addr.split(',')]
-        if len(parts) >= 3:
-            return ', '.join(parts[:-2])
         return None
 
     def extract_zip(addr: str):
         parts = [p.strip() for p in addr.split(',')]
-        # US zip: pair with state for specificity → "19067, PA" not just "19067"
         m = _re.search(r'\b(\d{5})(?:-\d{4})?\b', addr)
         if m:
             zip_code = m.group(1)
             state = _re.sub(r'\d+', '', parts[-2]).strip() if len(parts) >= 3 else ''
             return f"{zip_code}, {state}" if state else zip_code
-        # Canadian postal code
         m = _re.search(r'\b([A-Z]\d[A-Z]\s*\d[A-Z]\d)\b', addr)
         if m: return m.group(1)
         return None
 
     def normalize(addr: str) -> str:
-        n = _re.sub(r'[\t\s]{2,}', ', ', addr.strip())
-        return fix_zip(n)
+        return fix_zip(_re.sub(r'[\t\s]{2,}', ', ', addr.strip()))
 
-    # ---- single address with 5-strategy fallback ----
+    # ---- Nominatim fallback: try city+state, zip, then full address ----
 
-    async def geocode_with_fallback(client: httpx.AsyncClient, address: str) -> dict:
-        normalized = normalize(address)
-        strategies = []
-
-        # Build strategy list (deduplicated, preserving order)
-        seen = set()
-        def add(q, precision, note=None):
-            if q and q not in seen:
-                seen.add(q)
-                strategies.append((q, precision, note))
-
-        add(normalized,                        'exact',      None)
-        add(simplify(normalized),              'simplified', 'Building/suite removed')
-        add(extract_street_city(normalized),   'street',     'Street+city only')
-        add(extract_city_state(normalized),    'city',       'City/region only')
-        add(extract_zip(normalized),           'zipcode',    'ZIP code area only')
-
-        for i, (query, precision, note) in enumerate(strategies):
-            if i > 0:
-                delay_s = GEOCODIO_DELAY if is_us_canada(query) else NOMINATIM_DELAY
-                await asyncio.sleep(delay_s)
-
-            liq = await call_locationiq(client, query)
+    async def nominatim_fallback(client: httpx.AsyncClient, address: str, normalized: str) -> dict:
+        queries = [
+            (extract_city_state(normalized), 'city'),
+            (extract_zip(normalized),        'zipcode'),
+            (normalized,                     'nominatim_full'),
+        ]
+        first = True
+        for q, precision in queries:
+            if not q:
+                continue
+            if not first:
+                await asyncio.sleep(NOMINATIM_DELAY)
+            first = False
+            liq = await call_locationiq(client, q, force_nominatim=True)
             log_request({
-                "event": "geocode_strategy",
+                "event": "geocode_nominatim_fallback",
                 "request_id": request_id,
                 "address": address,
-                "query": query,
+                "query": q,
                 "strategy": precision,
                 "cache_hit": liq["cache_hit"],
-                "locationiq_status": liq["status_code"],
+                "status_code": liq["status_code"],
                 "error_type": liq["error_type"],
-                "t_locationiq_ms": liq["duration_ms"],
+                "t_ms": liq["duration_ms"],
             })
-
             data = liq["data"]
-            if liq["status_code"] == 200 and data and len(data) > 0:
+            if liq["status_code"] == 200 and data:
                 loc = data[0]
-                result = {
+                return {
                     "address":     address,
                     "lat":         float(loc["lat"]),
                     "lng":         float(loc["lon"]),
@@ -566,59 +533,119 @@ async def geocode_addresses(request_body: AddressRequest, request: Request):
                     "displayName": loc.get("display_name", ""),
                     "precision":   precision,
                 }
-                if note:
-                    result["note"] = note
-                return result
-
-        # If Geocodio exhausted all strategies, try Nominatim as last resort
-        if is_us_canada(normalized):
-            nom_queries = [extract_city_state(normalized), extract_zip(normalized), normalized]
-            for nom_q in nom_queries:
-                if not nom_q:
-                    continue
-                await asyncio.sleep(NOMINATIM_DELAY)
-                liq = await call_locationiq(client, nom_q, force_nominatim=True)
-                log_request({
-                    "event": "geocode_strategy",
-                    "request_id": request_id,
-                    "address": address,
-                    "query": nom_q,
-                    "strategy": "nominatim_fallback",
-                    "cache_hit": liq["cache_hit"],
-                    "locationiq_status": liq["status_code"],
-                    "error_type": liq["error_type"],
-                    "t_locationiq_ms": liq["duration_ms"],
-                })
-                data = liq["data"]
-                if liq["status_code"] == 200 and data and len(data) > 0:
-                    loc = data[0]
-                    return {
-                        "address":     address,
-                        "lat":         float(loc["lat"]),
-                        "lng":         float(loc["lon"]),
-                        "name":        normalized,
-                        "success":     True,
-                        "displayName": loc.get("display_name", ""),
-                        "precision":   "nominatim_fallback",
-                        "note":        "Geocodio failed; resolved via Nominatim",
-                    }
-
         return {"address": address, "success": False,
-                "error": "Address not found after trying all fallback strategies"}
-
-    # ---- process all addresses sequentially ----
-    results = []
-    cache_hits = 0
-    cache_misses = 0
-    t_liq_total = 0
+                "error": "Address not found"}
 
     async with httpx.AsyncClient() as client:
-        for idx, address in enumerate(request_body.addresses):
-            result = await geocode_with_fallback(client, address)
-            results.append(result)
-            if idx < len(request_body.addresses) - 1:
-                delay_s = GEOCODIO_DELAY if is_us_canada(normalize(address)) else NOMINATIM_DELAY
-                await asyncio.sleep(delay_s)
+
+        # Split addresses by provider
+        us_ca = []   # (orig_idx, address, normalized)
+        intl  = []   # (orig_idx, address, normalized)
+        for i, addr in enumerate(request_body.addresses):
+            norm = normalize(addr)
+            (us_ca if is_us_canada(norm) else intl).append((i, addr, norm))
+
+        results = [None] * len(request_body.addresses)
+
+        # ---- Geocodio batch for all US/Canada ----
+        if us_ca:
+            # Serve from cache first
+            uncached = []   # (j in us_ca, orig_idx, addr, norm)
+            for j, (orig_idx, addr, norm) in enumerate(us_ca):
+                cached, hit = geocode_cache.get(norm)
+                if hit and cached:
+                    loc = cached[0]
+                    results[orig_idx] = {
+                        "address": addr, "lat": float(loc["lat"]), "lng": float(loc["lon"]),
+                        "name": norm, "success": True,
+                        "displayName": loc.get("display_name", ""), "precision": "cache",
+                    }
+                else:
+                    uncached.append((j, orig_idx, addr, norm))
+
+            if uncached:
+                batch_queries = [norm for _, _, _, norm in uncached]
+                t0 = time.time()
+                try:
+                    resp = await client.post(
+                        GEOCODIO_URL,
+                        params={"api_key": GEOCODIO_API_KEY},
+                        json=batch_queries,
+                        timeout=60.0,
+                    )
+                    t_ms = round((time.time() - t0) * 1000)
+                    log_request({
+                        "event": "geocodio_batch",
+                        "request_id": request_id,
+                        "count": len(batch_queries),
+                        "status_code": resp.status_code,
+                        "t_ms": t_ms,
+                    })
+
+                    if resp.status_code == 200:
+                        batch_data = resp.json().get("results", [])
+                        for k, (_, orig_idx, addr, norm) in enumerate(uncached):
+                            geo_results = (batch_data[k]["response"]["results"]
+                                           if k < len(batch_data) else [])
+                            if geo_results:
+                                loc = geo_results[0]
+                                # Cache the result
+                                cached_form = [{
+                                    "lat": str(loc["location"]["lat"]),
+                                    "lon": str(loc["location"]["lng"]),
+                                    "display_name": loc.get("formatted_address", norm),
+                                }]
+                                geocode_cache.set(norm, cached_form)
+                                results[orig_idx] = {
+                                    "address":     addr,
+                                    "lat":         loc["location"]["lat"],
+                                    "lng":         loc["location"]["lng"],
+                                    "name":        norm,
+                                    "success":     True,
+                                    "displayName": loc.get("formatted_address", ""),
+                                    "precision":   loc.get("accuracy_type", "batch"),
+                                }
+                            else:
+                                # Geocodio returned no result → Nominatim fallback
+                                results[orig_idx] = await nominatim_fallback(client, addr, norm)
+                    else:
+                        # Batch request failed → fall everyone back to Nominatim
+                        for k, (_, orig_idx, addr, norm) in enumerate(uncached):
+                            if k > 0:
+                                await asyncio.sleep(NOMINATIM_DELAY)
+                            results[orig_idx] = await nominatim_fallback(client, addr, norm)
+
+                except Exception as e:
+                    log_request({"event": "geocodio_batch_error", "request_id": request_id, "error": str(e)})
+                    for k, (_, orig_idx, addr, norm) in enumerate(uncached):
+                        if k > 0:
+                            await asyncio.sleep(NOMINATIM_DELAY)
+                        results[orig_idx] = await nominatim_fallback(client, addr, norm)
+
+        # ---- Nominatim sequential for international ----
+        for i, (orig_idx, addr, norm) in enumerate(intl):
+            if i > 0:
+                await asyncio.sleep(NOMINATIM_DELAY)
+            liq = await call_locationiq(client, norm, force_nominatim=True)
+            log_request({
+                "event": "geocode_international",
+                "request_id": request_id,
+                "address": addr,
+                "status_code": liq["status_code"],
+                "cache_hit": liq["cache_hit"],
+                "t_ms": liq["duration_ms"],
+            })
+            data = liq["data"]
+            if liq["status_code"] == 200 and data:
+                loc = data[0]
+                results[orig_idx] = {
+                    "address": addr, "lat": float(loc["lat"]), "lng": float(loc["lon"]),
+                    "name": norm, "success": True,
+                    "displayName": loc.get("display_name", ""), "precision": "exact",
+                }
+            else:
+                # Try Nominatim fallback strategies for international too
+                results[orig_idx] = await nominatim_fallback(client, addr, norm)
 
     request.state.cache_hit = None
     request.state.t_locationiq_ms = None
