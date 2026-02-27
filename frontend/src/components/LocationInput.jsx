@@ -116,10 +116,45 @@ function LocationInput({ onLocationsAdded }) {
     return addresses
   }
 
+  // Clean Excel paste: merge multiline cells and strip CSV field quotes
+  const cleanExcelPaste = (text) => {
+    const rawLines = text.split('\n')
+    const mergedLines = []
+    let buffer = null
+
+    for (const line of rawLines) {
+      if (buffer !== null) {
+        // Inside a multiline quoted cell — look for closing quote
+        const closeIdx = line.lastIndexOf('"')
+        if (closeIdx >= 0 && (closeIdx === line.length - 1 || line[closeIdx + 1] === '\t')) {
+          buffer += ', ' + line.slice(0, closeIdx).trim()
+          mergedLines.push(buffer)
+          buffer = null
+        } else {
+          buffer += ', ' + line.trim()
+        }
+      } else if (line.startsWith('"') && !line.match(/^"[^"]*"(\t|$)/)) {
+        // Line starts with a quote that isn't closed on this line — multiline cell
+        buffer = line.slice(1).trim()
+      } else {
+        // Strip surrounding quotes from each tab-separated field
+        const cleaned = line.split('\t').map(field => {
+          const f = field.trim()
+          return (f.startsWith('"') && f.endsWith('"'))
+            ? f.slice(1, -1).replace(/""/g, '"').trim()
+            : f
+        }).join('\t')
+        mergedLines.push(cleaned)
+      }
+    }
+    if (buffer !== null) mergedLines.push(buffer)
+    return mergedLines.join('\n')
+  }
+
   const handlePaste = (e) => {
     e.preventDefault()
     const pastedText = e.clipboardData.getData('text')
-    setInputText(pastedText)
+    setInputText(cleanExcelPaste(pastedText))
   }
 
   const handleAddLocations = async () => {
