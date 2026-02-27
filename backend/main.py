@@ -212,24 +212,42 @@ class MapConfig(BaseModel):
     aspectRatio: str = Field(default="widescreen")
     projection: str = Field(default="web_mercator")
 
-# Nominatim (OpenStreetMap) configuration — no API key required
+# Geocodio — US + Canada
+GEOCODIO_API_KEY = os.getenv('GEOCODIO_API_KEY', 'c664e76745a669b76174a414b7761eac9e4b4c9')
+GEOCODIO_URL = 'https://api.geocod.io/v1.7/geocode'
+GEOCODIO_TIMEOUT = 10.0
+
+# Nominatim (OpenStreetMap) — international fallback, no key required
 NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search'
-NOMINATIM_TIMEOUT = 10.0  # seconds
-NOMINATIM_HEADERS = {
-    "User-Agent": "PNGMapper/1.0 (pngmapper.netlify.app)"
+NOMINATIM_TIMEOUT = 10.0
+NOMINATIM_HEADERS = {"User-Agent": "PNGMapper/1.0 (pngmapper.netlify.app)"}
+
+# US + Canadian province codes for routing
+US_CA_CODES = {
+    'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA',
+    'KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ',
+    'NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT',
+    'VA','WA','WV','WI','WY','DC',
+    'ON','QC','BC','AB','MB','SK','NS','NB','NL','PE','NT','NU','YT',
 }
 
+def is_us_canada(addr: str) -> bool:
+    """Return True if any comma-separated part matches a US state or Canadian province code."""
+    return any(p.strip().upper() in US_CA_CODES for p in addr.split(','))
+
 # ---------------------------------------------------------------------------
-# Nominatim wrapper with timing + error classification
+# Dual-provider geocoder: Geocodio (US/Canada) + Nominatim (international)
 # ---------------------------------------------------------------------------
 async def call_locationiq(client: httpx.AsyncClient, query: str, request: Request = None) -> dict:
     """
-    Call Nominatim (OpenStreetMap) for a single query.
-    Returns a dict with: data, status_code, duration_ms, error_type, cache_hit
-    Checks and populates the in-process cache.
+    Route to Geocodio (US/Canada) or Nominatim (international).
+    Geocodio response is normalised to Nominatim-style list:
+      [{"lat": "...", "lon": "...", "display_name": "..."}]
+    Returns: data, status_code, duration_ms, error_type, cache_hit, provider
     """
     import re
     normalized_query = re.sub(r'\s{2,}', ', ', query.strip())
+    use_geocodio = is_us_canada(normalized_query)
 
     # Cache check
     cached_data, hit = geocode_cache.get(normalized_query)
@@ -245,40 +263,76 @@ async def call_locationiq(client: httpx.AsyncClient, query: str, request: Reques
             "error_type": None,
             "cache_hit": True,
             "normalized_query": normalized_query,
+            "provider": "cache",
         }
 
-    # Cache miss — call Nominatim
     t_liq = time.time()
     error_type = None
     status_code = None
     data = None
 
     try:
-        response = await client.get(
-            NOMINATIM_URL,
-            params={"q": normalized_query, "format": "json", "limit": 1},
-            headers=NOMINATIM_HEADERS,
-            timeout=NOMINATIM_TIMEOUT,
-        )
-        duration_ms = round((time.time() - t_liq) * 1000)
-        status_code = response.status_code
+        if use_geocodio:
+            # ---- Geocodio (US + Canada) ----
+            response = await client.get(
+                GEOCODIO_URL,
+                params={"q": normalized_query, "api_key": GEOCODIO_API_KEY},
+                timeout=GEOCODIO_TIMEOUT,
+            )
+            duration_ms = round((time.time() - t_liq) * 1000)
+            status_code = response.status_code
 
-        if response.status_code == 200:
-            data = response.json()
-            # Cache only successful, non-empty results
-            if data and len(data) > 0:
-                geocode_cache.set(normalized_query, data)
-        elif response.status_code == 429:
-            error_type = "rate_limit_429"
-        elif response.status_code >= 500:
-            error_type = f"nominatim_{response.status_code}"
+            if response.status_code == 200:
+                body = response.json()
+                results = body.get("results", [])
+                if results:
+                    # Normalise to Nominatim-style so downstream code is unchanged
+                    data = [
+                        {
+                            "lat": str(r["location"]["lat"]),
+                            "lon": str(r["location"]["lng"]),
+                            "display_name": r.get("formatted_address", normalized_query),
+                        }
+                        for r in results
+                    ]
+                    geocode_cache.set(normalized_query, data)
+                else:
+                    data = []
+            elif response.status_code == 422:
+                error_type = "geocodio_unprocessable"
+            elif response.status_code == 403:
+                error_type = "geocodio_auth"
+            elif response.status_code >= 500:
+                error_type = f"geocodio_{response.status_code}"
+            else:
+                error_type = f"http_{response.status_code}"
+
         else:
-            error_type = f"http_{response.status_code}"
+            # ---- Nominatim (international) ----
+            response = await client.get(
+                NOMINATIM_URL,
+                params={"q": normalized_query, "format": "json", "limit": 1},
+                headers=NOMINATIM_HEADERS,
+                timeout=NOMINATIM_TIMEOUT,
+            )
+            duration_ms = round((time.time() - t_liq) * 1000)
+            status_code = response.status_code
+
+            if response.status_code == 200:
+                data = response.json()
+                if data and len(data) > 0:
+                    geocode_cache.set(normalized_query, data)
+            elif response.status_code == 429:
+                error_type = "rate_limit_429"
+            elif response.status_code >= 500:
+                error_type = f"nominatim_{response.status_code}"
+            else:
+                error_type = f"http_{response.status_code}"
 
     except httpx.TimeoutException:
         duration_ms = round((time.time() - t_liq) * 1000)
         error_type = "timeout"
-    except Exception as e:
+    except Exception:
         duration_ms = round((time.time() - t_liq) * 1000)
         error_type = "network_error"
 
@@ -294,6 +348,7 @@ async def call_locationiq(client: httpx.AsyncClient, query: str, request: Reques
         "error_type": error_type,
         "cache_hit": False,
         "normalized_query": normalized_query,
+        "provider": "geocodio" if use_geocodio else "nominatim",
     }
 
 # ---------------------------------------------------------------------------
@@ -305,23 +360,31 @@ def read_root():
     return {"message": "P&G Mapper API is running"}
 
 @app.get("/debug-geocode")
-async def debug_geocode(q: str = "New York"):
-    """Test Nominatim directly and return the raw response for debugging."""
+async def debug_geocode(q: str = "500 Main St, Fairless Hills, PA 19067"):
+    """Test geocoding provider and return the raw response for debugging."""
+    use_geocodio = is_us_canada(q)
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.get(
-                NOMINATIM_URL,
-                params={"q": q, "format": "json", "limit": 1},
-                headers=NOMINATIM_HEADERS,
-                timeout=10.0,
-            )
+            if use_geocodio:
+                response = await client.get(
+                    GEOCODIO_URL,
+                    params={"q": q, "api_key": GEOCODIO_API_KEY},
+                    timeout=10.0,
+                )
+            else:
+                response = await client.get(
+                    NOMINATIM_URL,
+                    params={"q": q, "format": "json", "limit": 1},
+                    headers=NOMINATIM_HEADERS,
+                    timeout=10.0,
+                )
             try:
                 body = response.json()
             except Exception:
                 body = response.text
             return {
                 "status_code": response.status_code,
-                "service": "Nominatim (OpenStreetMap)",
+                "service": "Geocodio" if use_geocodio else "Nominatim (OpenStreetMap)",
                 "query": q,
                 "response_body": body,
             }
@@ -396,8 +459,8 @@ async def geocode_addresses(request_body: AddressRequest, request: Request):
     import asyncio
     import re as _re
 
-    STRATEGY_DELAY = 1.1    # seconds between failed strategy attempts (Nominatim: 1 req/sec)
-    ADDRESS_DELAY  = 1.1    # seconds between addresses
+    NOMINATIM_DELAY = 1.1   # Nominatim enforces 1 req/sec; respect it
+    GEOCODIO_DELAY  = 0.05  # Geocodio is bulk-friendly; tiny delay avoids hammering
 
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
 
@@ -473,7 +536,8 @@ async def geocode_addresses(request_body: AddressRequest, request: Request):
 
         for i, (query, precision, note) in enumerate(strategies):
             if i > 0:
-                await asyncio.sleep(STRATEGY_DELAY)
+                delay_s = GEOCODIO_DELAY if is_us_canada(query) else NOMINATIM_DELAY
+                await asyncio.sleep(delay_s)
 
             liq = await call_locationiq(client, query)
             log_request({
@@ -518,7 +582,8 @@ async def geocode_addresses(request_body: AddressRequest, request: Request):
             result = await geocode_with_fallback(client, address)
             results.append(result)
             if idx < len(request_body.addresses) - 1:
-                await asyncio.sleep(ADDRESS_DELAY)
+                delay_s = GEOCODIO_DELAY if is_us_canada(normalize(address)) else NOMINATIM_DELAY
+                await asyncio.sleep(delay_s)
 
     request.state.cache_hit = None
     request.state.t_locationiq_ms = None
