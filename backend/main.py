@@ -647,6 +647,12 @@ async def geocode_addresses(request_body: AddressRequest, request: Request):
                 # Try Nominatim fallback strategies for international too
                 results[orig_idx] = await nominatim_fallback(client, addr, norm)
 
+    # Replace any unresolved slots (shouldn't happen, but safety net)
+    for i, r in enumerate(results):
+        if r is None:
+            results[i] = {"address": request_body.addresses[i], "success": False,
+                          "error": "No result (internal error)"}
+
     request.state.cache_hit = None
     request.state.t_locationiq_ms = None
     return results
