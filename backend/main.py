@@ -417,32 +417,33 @@ async def geocode_addresses(request_body: AddressRequest, request: Request):
         return s.strip()
 
     def extract_city_state(addr: str):
-        m = _re.search(r'([A-Za-z\s]+?),?\s+([A-Z]{2})\s+\d{5}(?:-\d{4})?', addr)
-        if m:
-            words = m.group(1).strip().split()
-            return f"{' '.join(words[-3:])}, {m.group(2)}"
-        ca = _re.search(r'([A-Za-z\s]+?)\s+(ON|AB|BC|MB|NB|NL|NS|NT|NU|PE|QC|SK|YT)\s+[A-Z0-9]{3}\s*[A-Z0-9]{3}', addr)
-        if ca:
-            words = ca.group(1).strip().split()
-            return f"{' '.join(words[-3:])}, {ca.group(2)}"
+        # Works on comma-separated addresses: "street, city, ST, zip" → "city, ST"
         parts = [p.strip() for p in addr.split(',')]
-        if len(parts) >= 2:
-            city = _re.sub(r'\d{5}(-\d{4})?', '', parts[-2]).strip()
-            state_raw = _re.sub(r'\d{5}(-\d{4})?', '', parts[-1]).strip()
-            sm = _re.search(r'\b([A-Z]{2})\b', state_raw)
-            return f"{city}, {sm.group(1)}" if sm else f"{city}, {state_raw}"
+        if len(parts) >= 3:
+            # state is parts[-2], city is parts[-3] (strip any digits)
+            state = _re.sub(r'\d+', '', parts[-2]).strip()
+            city  = _re.sub(r'\d+', '', parts[-3]).strip()
+            if city and state:
+                return f"{city}, {state}"
+        # Canadian postal: "street, city, ON, A1B 2C3" handled same way above
         return None
 
     def extract_street_city(addr: str):
+        # "street, city, ST, zip" → "street, city"  (drop state + zip)
         parts = [p.strip() for p in addr.split(',')]
         if len(parts) >= 3:
-            last = _re.sub(r'\d{5}(-\d{4})?', '', parts[-1]).strip()
-            return f"{parts[-2]}, {last}"
+            return ', '.join(parts[:-2])
         return None
 
     def extract_zip(addr: str):
+        parts = [p.strip() for p in addr.split(',')]
+        # US zip: pair with state for specificity → "19067, PA" not just "19067"
         m = _re.search(r'\b(\d{5})(?:-\d{4})?\b', addr)
-        if m: return m.group(1)
+        if m:
+            zip_code = m.group(1)
+            state = _re.sub(r'\d+', '', parts[-2]).strip() if len(parts) >= 3 else ''
+            return f"{zip_code}, {state}" if state else zip_code
+        # Canadian postal code
         m = _re.search(r'\b([A-Z]\d[A-Z]\s*\d[A-Z]\d)\b', addr)
         if m: return m.group(1)
         return None
