@@ -238,6 +238,20 @@ def is_us_canada(addr: str) -> bool:
         return True
     return any(p.strip().upper() in US_CA_CODES for p in addr.split(','))
 
+def geocodio_result_matches(norm: str, formatted_address: str) -> bool:
+    """
+    Validate that the Geocodio result is in the expected state/province.
+    Returns False if a state/province code in the address doesn't appear in
+    the formatted result (e.g. 'NB' → 'Verne, WY 82934' → reject).
+    """
+    import re as _re
+    for part in norm.split(','):
+        code = part.strip().upper()
+        if len(code) == 2 and code in US_CA_CODES:
+            if not _re.search(r'\b' + code + r'\b', formatted_address):
+                return False
+    return True
+
 # ---------------------------------------------------------------------------
 # Dual-provider geocoder: Geocodio (US/Canada) + Nominatim (international)
 # ---------------------------------------------------------------------------
@@ -595,30 +609,47 @@ async def geocode_addresses(request_body: AddressRequest, request: Request):
 
                     if resp.status_code == 200:
                         batch_data = resp.json().get("results", [])
+                        nominatim_needed = []  # (orig_idx, addr, norm) for mismatches/misses
                         for k, (_, orig_idx, addr, norm) in enumerate(uncached):
                             geo_results = (batch_data[k]["response"]["results"]
                                            if k < len(batch_data) else [])
                             if geo_results:
                                 loc = geo_results[0]
-                                # Cache the result
-                                cached_form = [{
-                                    "lat": str(loc["location"]["lat"]),
-                                    "lon": str(loc["location"]["lng"]),
-                                    "display_name": loc.get("formatted_address", norm),
-                                }]
-                                geocode_cache.set(norm, cached_form)
-                                results[orig_idx] = {
-                                    "address":     addr,
-                                    "lat":         loc["location"]["lat"],
-                                    "lng":         loc["location"]["lng"],
-                                    "name":        norm,
-                                    "success":     True,
-                                    "displayName": loc.get("formatted_address", ""),
-                                    "precision":   loc.get("accuracy_type", "batch"),
-                                }
+                                formatted = loc.get("formatted_address", norm)
+                                if geocodio_result_matches(norm, formatted):
+                                    # Cache the result
+                                    cached_form = [{
+                                        "lat": str(loc["location"]["lat"]),
+                                        "lon": str(loc["location"]["lng"]),
+                                        "display_name": formatted,
+                                    }]
+                                    geocode_cache.set(norm, cached_form)
+                                    results[orig_idx] = {
+                                        "address":     addr,
+                                        "lat":         loc["location"]["lat"],
+                                        "lng":         loc["location"]["lng"],
+                                        "name":        norm,
+                                        "success":     True,
+                                        "displayName": formatted,
+                                        "precision":   loc.get("accuracy_type", "batch"),
+                                    }
+                                else:
+                                    log_request({
+                                        "event": "geocodio_state_mismatch",
+                                        "request_id": request_id,
+                                        "address": addr,
+                                        "geocodio_result": formatted,
+                                    })
+                                    nominatim_needed.append((orig_idx, addr, norm))
                             else:
                                 # Geocodio returned no result → Nominatim fallback
-                                results[orig_idx] = await nominatim_fallback(client, addr, norm)
+                                nominatim_needed.append((orig_idx, addr, norm))
+
+                        # Process Nominatim fallbacks with proper rate limiting
+                        for i, (orig_idx, addr, norm) in enumerate(nominatim_needed):
+                            if i > 0:
+                                await asyncio.sleep(NOMINATIM_DELAY)
+                            results[orig_idx] = await nominatim_fallback(client, addr, norm)
                     else:
                         # Batch request failed → fall everyone back to Nominatim
                         for k, (_, orig_idx, addr, norm) in enumerate(uncached):
