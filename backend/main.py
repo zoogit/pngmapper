@@ -519,12 +519,22 @@ async def geocode_addresses(request_body: AddressRequest, request: Request):
             n = n.rstrip('"').strip()
         return fix_zip(n)
 
+    CANADIAN_PROV_CODES = {'ON','QC','BC','AB','MB','SK','NS','NB','NL','PE','NT','NU','YT'}
+
+    def with_canada(norm: str):
+        """Append ', Canada' if norm contains a Canadian province code."""
+        for part in norm.split(','):
+            if part.strip().upper() in CANADIAN_PROV_CODES:
+                return f"{norm}, Canada"
+        return None
+
     # ---- Nominatim fallback: try city+state, zip, then full address ----
 
     async def nominatim_fallback(client: httpx.AsyncClient, address: str, normalized: str) -> dict:
         queries = [
             (extract_city_state(normalized), 'city'),
             (extract_zip(normalized),        'zipcode'),
+            (with_canada(normalized),        'canada_with_country'),
             (normalized,                     'nominatim_full'),
         ]
         first = True
